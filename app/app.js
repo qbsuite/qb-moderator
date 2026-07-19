@@ -167,6 +167,68 @@ $('loadbtn').onclick = () => {
   nextQuestion();
 };
 
+// ---------- upload your own packets (parsed by YAPP) ----------
+// Each .docx/.html file becomes one packet: parsed by alopezlago's
+// hosted YAPP service (Yet Another Packet Parser — CORS-open, MODAQ
+// JSON), then mapped onto the same set-payload shape the R2 sets use,
+// so everything downstream (reading modes, bonuses, rooms) just works.
+// Uploaded questions have no TTS audio, so audio mode falls back to
+// reveal automatically.
+const YAPP_API = 'https://www.quizbowlreader.com/yapp/api/parse?version=2&modaq=true';
+const stripTags = s => String(s || '').replace(/<[^>]+>/g, '');
+
+function mapYappPacket(json, number, name) {
+  return {
+    number, name,
+    tossups: (json.tossups || []).map((t, j) => ({
+      _id: `up-${number}-t${j}`,
+      question_sanitized: stripTags(t.question),
+      answer: t.answer || '',
+    })),
+    bonuses: (json.bonuses || []).map((b, j) => ({
+      _id: `up-${number}-b${j}`,
+      leadin_sanitized: stripTags(b.leadin),
+      parts_sanitized: (b.parts || []).map(stripTags),
+      answers: b.answers || [],
+    })),
+  };
+}
+
+$('upload').onchange = async () => {
+  const files = [...$('upload').files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (!files.length) return;
+  $('setstatus').textContent = 'Parsing…';
+  $('loadbtn').disabled = true;
+  const packets = [];
+  for (const f of files) {
+    $('setstatus').textContent = `Parsing ${f.name}…`;
+    let r;
+    try {
+      r = await fetch(YAPP_API, { method: 'POST', body: f, mode: 'cors' });
+    } catch (e) {
+      $('setstatus').textContent = `Couldn’t reach the packet parser (${e.message}).`;
+      return;
+    }
+    if (!r.ok) {
+      $('setstatus').textContent = `${f.name}: parser said HTTP ${r.status} — is it a packet in docx/html form?`;
+      return;
+    }
+    const json = await r.json();
+    if (!(json.tossups || []).length && !(json.bonuses || []).length) {
+      $('setstatus').textContent = `${f.name}: no questions found in the parse.`;
+      return;
+    }
+    packets.push(mapYappPacket(json, packets.length + 1, f.name.replace(/\.[^.]*$/, '')));
+  }
+  SET = { name: files.length === 1 ? packets[0].name : `Uploaded (${files.length} packets)`, packets };
+  $('packetpick').innerHTML = SET.packets.map((p, i) =>
+    `<option value="${i}">Packet ${p.number}${p.name ? ' — ' + esc(p.name) : ''} (${p.tossups.length} TU)</option>`).join('');
+  const tus = packets.reduce((n, p) => n + p.tossups.length, 0);
+  const bs = packets.reduce((n, p) => n + p.bonuses.length, 0);
+  $('setstatus').textContent = `${SET.name} — ${tus} tossups, ${bs} bonuses (no TTS audio for uploads)`;
+  $('loadbtn').disabled = false;
+};
+
 // ---------- live settings ----------
 $('optScoring').onchange = () =>
   dispatch({ type: 'configure', patch: { scoring: $('optScoring').checked } });

@@ -217,11 +217,18 @@
     <select id="setlist" size="8"></select>
     <div class="srow" style="margin-top:0.5rem">
       <select id="packetpick" style="flex:1"></select>
-      <select id="modepick2" title="Reading mode">
+    </div>
+    <div class="srow">
+      <select id="modepick2" title="Reading mode" style="flex:1">
         <option value="audio">♪ TTS audio</option>
         <option value="reveal">Word-by-word reveal</option>
         <option value="text">Full text (I read)</option>
       </select>
+    </div>
+    <div class="srow" style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.6rem">
+      <label for="upload" class="muted" style="margin:0">…or upload your own packets</label>
+      <input type="file" id="upload" multiple accept=".docx,.html"
+        style="flex:1;min-width:0;font-size:0.85rem">
     </div>
     <div class="muted" id="setstatus">Loading catalog…</div>
     <div class="sheetfoot">

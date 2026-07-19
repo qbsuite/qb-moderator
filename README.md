@@ -66,4 +66,8 @@ question text from the library-of-stock R2 bucket (`catalog.json`,
 Question content reaches this tool via [qbreader](https://www.qbreader.org)
 and the tournament authors whose packets it archives. Answer checking is
 [qb-answer-checker](https://github.com/qbreader/qb-answer-checker)
-(ISC © Geoffrey Wu), vendored with attribution. MIT license.
+(ISC © Geoffrey Wu), vendored with attribution. Uploaded packets are
+parsed by the hosted
+[YAPP](https://github.com/alopezlago/YetAnotherPacketParser) service
+(Yet Another Packet Parser © Alejandro Lopez-Lago) — the same parser
+MODAQ uses. MIT license.
