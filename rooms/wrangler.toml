@@ -1,0 +1,15 @@
+# qb-moderator room server. Self-hostable: `npx wrangler deploy` on any
+# Cloudflare account (free plan — SQLite-backed Durable Objects +
+# WebSocket hibernation cost nothing at friends scale). Point the app
+# at your instance with ?server=https://qb-rooms.<you>.workers.dev
+name = "qb-rooms"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]

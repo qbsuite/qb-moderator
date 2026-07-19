@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>buzz — qb-moderator</title>
+<style>
+  :root {
+    --bg: #101418; --raised: #1a1f25; --input: #15191e; --border: #3a3f47;
+    --link: #6b9eff; --text: #c8ccd1; --bright: #e0e0e0; --muted: #9aa0a7;
+    --faint: #808790; --good: #4caf7d; --bad: #e05555;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text);
+         font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column; }
+  .muted { color: var(--muted); font-size: 0.86rem; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+
+  /* join screen */
+  #join { max-width: 22rem; margin: 14vh auto 0; padding: 0 1.2rem; width: 100%; }
+  #join h1 { font-size: 1.2rem; color: var(--bright); }
+  #join input { width: 100%; padding: 0.8rem; margin: 0.3rem 0 0.7rem; font-size: 1.1rem;
+    background: var(--input); color: var(--text); border: 1px solid var(--border);
+    border-radius: 9px; }
+  #join input#code { text-transform: uppercase; letter-spacing: 0.3em; font-weight: 700; }
+  #join button { width: 100%; padding: 0.9rem; font-size: 1.1rem; font-weight: 700;
+    background: var(--link); color: #fff; border: none; border-radius: 9px; cursor: pointer; }
+  #joinerr { color: var(--bad); min-height: 1.3em; font-size: 0.9rem; }
+
+  /* game screen */
+  #game { flex: 1; display: none; flex-direction: column; }
+  #topline { display: flex; gap: 0.8rem; align-items: baseline; padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border); }
+  #topline b { color: var(--bright); letter-spacing: 0.15em; }
+  #conn { margin-left: auto; }
+
+  #bigbuzz { flex: 1; margin: 1rem; border: none; border-radius: 22px;
+    font-size: 2.2rem; font-weight: 800; color: #06120b; background: var(--good);
+    cursor: pointer; touch-action: manipulation; transition: background 0.1s; }
+  #bigbuzz.waiting { background: var(--input); color: var(--faint); }
+  #bigbuzz.mine { background: var(--bad); color: #fff; }
+  #bigbuzz.other { background: var(--raised); color: var(--muted); }
+  #bigbuzz.locked { background: var(--input); color: var(--faint);
+    text-decoration: line-through; }
+
+  #board { padding: 0 1.2rem 1.4rem; }
+  .bteam { margin-top: 0.7rem; }
+  .bteam .bhead { display: flex; justify-content: space-between; font-weight: 700;
+    color: var(--bright); border-bottom: 1px solid var(--border); padding-bottom: 0.15rem; }
+  .brow { display: flex; justify-content: space-between; padding: 0.18rem 0;
+    color: var(--muted); }
+  .brow.me { color: var(--bright); font-weight: 700; }
+  .brow.locked { opacity: 0.45; }
+</style>
+</head>
+<body>
+  <div id="join">
+    <h1>Join room</h1>
+    <input id="code" placeholder="CODE" maxlength="4" autocomplete="off">
+    <input id="name" placeholder="Your name" maxlength="40" autocomplete="off">
+    <button id="joinbtn">Join</button>
+    <div id="joinerr"></div>
+  </div>
+
+  <div id="game">
+    <div id="topline">
+      <b id="roomcode"></b>
+      <span class="muted" id="qlabel"></span>
+      <span class="muted" id="conn">●</span>
+    </div>
+    <button id="bigbuzz" class="waiting">…</button>
+    <div id="board"></div>
+  </div>
+
+<script>
+(() => {
+'use strict';
+const DEFAULT_SERVER = 'https://qb-rooms.denisliu10.workers.dev';
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const params = new URLSearchParams(location.search);
+const server = params.get('server') || DEFAULT_SERVER;
+if (params.get('code')) $('code').value = params.get('code');
+if (localStorage.qbmodName) $('name').value = localStorage.qbmodName;
+
+let ws = null, me = '', code = '', armed = false, mineBuzz = false, closed = false;
+let snapshot = null;
+
+$('joinbtn').onclick = join;
+$('code').oninput = () => { $('code').value = $('code').value.toUpperCase(); };
+
+function join() {
+  code = $('code').value.trim().toUpperCase();
+  me = $('name').value.trim();
+  if (!/^[A-Z2-9]{4}$/.test(code)) { $('joinerr').textContent = 'Enter the 4-letter room code.'; return; }
+  if (!me) { $('joinerr').textContent = 'Enter your name.'; return; }
+  localStorage.qbmodName = me;
+  connect();
+}
+
+function connect() {
+  const url = server.replace(/^http/, 'ws') +
+    '/rooms/' + code + '/ws?role=player&name=' + encodeURIComponent(me);
+  ws = new WebSocket(url);
+  ws.onopen = () => {
+    $('join').style.display = 'none';
+    $('game').style.display = 'flex';
+    $('roomcode').textContent = code;
+    $('conn').textContent = '●';
+    $('conn').className = 'good';
+  };
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; mineBuzz = false; renderAll(); }
+    else if (m.t === 'arm') { armed = true; mineBuzz = false; vibrate(40); renderBuzz(); }
+    else if (m.t === 'disarm') { armed = false; renderBuzz(); }
+    else if (m.t === 'buzz') {
+      armed = false;
+      if (m.name === me) { mineBuzz = true; vibrate([60, 40, 60]); }
+      renderBuzz(m.name);
+    }
+    else if (m.t === 'rejected') { renderBuzz(); }
+    else if (m.t === 'state') { snapshot = m.snapshot; renderAll(); }
+  };
+  ws.onclose = () => {
+    $('conn').textContent = '○ reconnecting…';
+    $('conn').className = 'bad';
+    if (!closed) setTimeout(connect, 2000);
+  };
+}
+
+function vibrate(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+function amLocked() {
+  const p = snapshot && snapshot.players && snapshot.players.find(x => x.name === me);
+  return !!(p && p.locked);
+}
+
+$('bigbuzz').onclick = () => {
+  if (!armed || amLocked() || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ t: 'buzz' }));
+};
+
+function renderBuzz(buzzer) {
+  const b = $('bigbuzz');
+  if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
+  else if (buzzer) { b.className = 'other'; b.textContent = buzzer + ' buzzed'; }
+  else if (amLocked()) { b.className = 'locked'; b.textContent = 'locked out'; }
+  else if (armed) { b.className = ''; b.textContent = 'BUZZ'; }
+  else { b.className = 'waiting'; b.textContent = '…'; }
+}
+
+function renderAll() {
+  $('qlabel').textContent = (snapshot && snapshot.label) || '';
+  renderBuzz();
+  const board = $('board');
+  if (!snapshot || !snapshot.teams) { board.innerHTML = ''; return; }
+  board.innerHTML = snapshot.teams.map(t => `
+    <div class="bteam">
+      <div class="bhead"><span>${esc(t.name)}</span><span>${t.score}</span></div>
+      ${(snapshot.players || []).filter(p => p.team === t.name).map(p => `
+        <div class="brow ${p.name === me ? 'me' : ''} ${p.locked ? 'locked' : ''}">
+          <span>${esc(p.name)}</span><span>${p.score}</span></div>`).join('')}
+    </div>`).join('')
+    + ((snapshot.players || []).some(p => !p.team) ? `
+    <div class="bteam">
+      <div class="bhead"><span class="muted">Players</span><span></span></div>
+      ${(snapshot.players || []).filter(p => !p.team).map(p => `
+        <div class="brow ${p.name === me ? 'me' : ''} ${p.locked ? 'locked' : ''}">
+          <span>${esc(p.name)}</span><span>${p.score}</span></div>`).join('')}
+    </div>` : '');
+}
+})();
+</script>
+</body>
+</html>

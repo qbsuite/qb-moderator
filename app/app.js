@@ -17,6 +17,7 @@
 
 import { initialState, reduce, scores, teamScores } from '../engine/engine.js';
 import * as audio from './audio.js';
+import { createRoom, connectHost } from './room.js';
 
 const { questionUnits, slowSpans, SLOW_FACTOR } = globalThis.qbRevealUnits;
 
@@ -40,7 +41,73 @@ let teamList = [];         // team names in display order
 const qidMeta = {};        // qid -> {label: "Packet 7 · Tossup 4"}
 const player = audio.createPlayer();
 
+let room = null;           // connected room (room.js) or null
+let roomArmed = null;      // last arm/disarm sent, to avoid spam
+
 function dispatch(ev) { state = reduce(state, ev); render(); }
+
+// ---------- room mode (phones as buzzers) ----------
+$('roombtn').onclick = async () => {
+  if (room) {   // already hosting: copy the player join link
+    const url = room.playerUrl();
+    try { await navigator.clipboard.writeText(url); } catch (e) { prompt('Player link:', url); }
+    $('roombtn').textContent = '🌐 ' + room.code + ' ✓';
+    setTimeout(() => { if (room) $('roombtn').textContent = '🌐 ' + room.code; }, 1200);
+    return;
+  }
+  $('roombtn').disabled = true;
+  try {
+    const code = await createRoom();
+    room = connectHost(code, {
+      onBuzz: handleRemoteBuzz,
+      onJoin: name => {
+        if (name && !state.players.includes(name)) {
+          dispatch({ type: 'player_join', player: name, team: null });
+        } else render();
+      },
+      onOpen: () => { roomArmed = null; render(); },   // resync after (re)connect
+    });
+    $('roombtn').textContent = '🌐 ' + code;
+    $('roombtn').title = 'Click to copy the player join link';
+  } finally {
+    $('roombtn').disabled = false;
+  }
+};
+
+function handleRemoteBuzz(name) {
+  if (!cur || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
+  const lockouts = state.current ? state.current.lockouts : [];
+  if (lockouts.includes(name)) { roomArmed = null; syncRoom(); return; }  // reopen buzzers
+  if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
+  pauseReading();
+  pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
+  selPlayer = name;
+  render();
+}
+
+function buildSnapshot() {
+  const totals = scores(state);
+  const tTotals = teamScores(state);
+  const lockouts = state.current ? state.current.lockouts : [];
+  return {
+    label: cur ? (qidMeta[cur.q._id]?.label || '') : '',
+    teams: teamList.map(t => ({ name: t, score: tTotals[t] ?? 0 })),
+    players: state.players.map(p => ({
+      name: p, team: state.teams[p] || null,
+      score: totals[p] ?? 0, locked: lockouts.includes(p),
+    })),
+  };
+}
+
+function syncRoom() {
+  if (!room) return;
+  room.send({ t: 'state', snapshot: buildSnapshot() });
+  const wantArmed = !!(cur && state.phase === 'reading' && !pendingBuzz);
+  if (wantArmed !== roomArmed) {
+    roomArmed = wantArmed;
+    room.send({ t: wantArmed ? 'arm' : 'disarm' });
+  }
+}
 
 // ---------- sheets ----------
 for (const id of ['setsheet', 'rostersheet', 'settingsheet']) {
@@ -66,6 +133,11 @@ function renderSetList(filter) {
     `<option value="${s.slug}">${esc(s.name)} (diff ${s.difficulty ?? '?'})</option>`).join('');
 }
 $('setsearch').oninput = e => renderSetList(e.target.value);
+
+// Reading mode is choosable in the set sheet (before starting) AND in
+// the header (mid-game); the two selects stay in sync.
+$('modepick2').onchange = () => { $('modepick').value = $('modepick2').value; };
+$('modepick').onchange = () => { $('modepick2').value = $('modepick').value; };
 
 $('setlist').onchange = async () => {
   const slug = $('setlist').value;
@@ -259,6 +331,7 @@ function render() {
   renderScoring();
   renderHistory();
   renderMain();
+  syncRoom();
 }
 
 function renderHeader() {

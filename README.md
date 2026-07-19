@@ -29,9 +29,15 @@ One device, one host. Working today:
 - Scoreless mode, lockouts, dead questions, score history with
   host overrides.
 
-Roadmap (SPEC.md + the design doc): temporary self-hosted **rooms** with
-phones as buzzers, then **voice mode** (physical-buzzer sound detection +
-speech-to-text answers).
+- **Rooms — phones as buzzers**: 🌐 Room creates a temporary 4-letter
+  room; players open `player.html`, join by code, and get a full-screen
+  buzz button with a live scoreboard. First buzz wins (arbitrated
+  server-side), the host adjudicates as usual. The room server is a
+  tiny self-hostable Cloudflare Worker (`rooms/`, free plan) with a
+  default instance provided.
+
+Roadmap (SPEC.md + the design doc): **voice mode** (physical-buzzer
+sound detection + speech-to-text answers), remote text-reveal rooms.
 
 ## Run it
 

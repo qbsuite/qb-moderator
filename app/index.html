@@ -136,7 +136,9 @@
 
   .tblock { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.8rem;
     margin-bottom: 0.7rem; background: var(--input); }
-  .tblock input, .tblock textarea { width: 100%; background: var(--bg); }
+  .tblock input, .tblock textarea { width: 100%; background: var(--bg);
+    color: var(--text); border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font: inherit; }
   .tblock label { display: block; color: var(--faint); font-size: 0.78rem;
     text-transform: uppercase; letter-spacing: 0.05em; margin: 0.4rem 0 0.2rem; }
   .tblock textarea { resize: vertical; min-height: 3.2rem; }
@@ -156,6 +158,7 @@
       <option value="reveal">Word-by-word reveal</option>
       <option value="text">Full text (I read)</option>
     </select>
+    <button class="hbtn" id="roombtn">🌐 Room</button>
     <button class="hbtn" id="rosterbtn">👥 Players</button>
     <button class="hbtn" id="gearbtn" title="More settings">⚙</button>
   </header>
@@ -198,6 +201,11 @@
     <select id="setlist" size="8"></select>
     <div class="srow" style="margin-top:0.5rem">
       <select id="packetpick" style="flex:1"></select>
+      <select id="modepick2" title="Reading mode">
+        <option value="audio">♪ TTS audio</option>
+        <option value="reveal">Word-by-word reveal</option>
+        <option value="text">Full text (I read)</option>
+      </select>
     </div>
     <div class="muted" id="setstatus">Loading catalog…</div>
     <div class="sheetfoot">

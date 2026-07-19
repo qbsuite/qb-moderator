@@ -114,12 +114,37 @@ unit indexes; files without sidecars fall back to proportional
   (`app/vendor/answer_checker.js`, ISC, unmodified from the site's vendor
   copy) — verdicts are suggestions for the host.
 
-## Room protocol (v1, not yet built)
+## Room protocol — v1 BUILT (host-authoritative relay)
 
-The engine moves server-side into a Durable Object per room
-(architecture: library-of-stock `docs/rooms.md`). Client→server messages
-are exactly the engine events above plus lobby concerns (join/name);
-server→client is `{state, logTail}` snapshots + the reading clock
-`{doc, startedAt, msPerWord}`. Buzz anti-cheat: server clamps the claimed
-`unitIdx` against its own clock. Hosts self-host the room server
-(wrangler deploy, free plan) or use the default instance.
+`rooms/worker.js`: one SQLite-backed Durable Object per room (WebSocket
+Hibernation, free plan), self-hostable via `rooms/wrangler.toml`;
+default instance `https://qb-rooms.denisliu10.workers.dev`. **v1
+deliberately simplifies the docs/rooms.md design: the engine stays in
+the host's browser** (this is an in-person tool — the host is the
+moderator and is trusted); the DO does only what a server must —
+atomic first-buzz arbitration, fan-out, and a stored display snapshot
+for late joiners.
+
+- `POST /rooms` → `{code}` (4 chars, unambiguous alphabet; the code IS
+  the DO name — no registry, rooms are temporary).
+- `GET /rooms/:code/ws?name=&role=host|player` → WebSocket.
+- player→DO: `{t:'buzz'}` — accepted only while armed; first buzz
+  disarms atomically (DO messages are serial) and broadcasts
+  `{t:'buzz', name}`; otherwise `{t:'rejected'}` to the sender.
+- host→DO: `{t:'state', snapshot}` (stored + fanned out),
+  `{t:'arm'}` / `{t:'disarm'}`.
+- DO→client: `{t:'welcome', snapshot, armed, roster}` on connect, plus
+  join/leave fan-out.
+- Host app (`app/room.js`): sends a display snapshot after every engine
+  event, arms exactly when `phase==='reading' && !pendingBuzz`, maps an
+  incoming buzz to `pendingBuzz` at the host's current clock position
+  with the player preselected; locked-out players' buzzes re-arm.
+  Player joins auto-`player_join` the engine roster.
+- Player page (`app/player.html`): join by code (+`?code=`/`?server=`
+  URL params), full-screen buzz button (armed/waiting/mine/other/
+  locked states), live scoreboard, vibration, auto-reconnect.
+- Live protocol test: `node tests/rooms.e2e.mjs` (not in CI — hits the
+  deployed instance).
+
+Server-authoritative grading + remote text reveal (the full rooms.md
+design) remain the v2 path if online play beyond one room ever matters.
