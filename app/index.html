@@ -6,171 +6,239 @@
 <title>qb-moderator</title>
 <style>
   :root {
-    --bg: #14161a; --panel: #1d2026; --panel2: #24272e; --text: #e6e6e6;
-    --dim: #9aa0a8; --accent: #4da3ff; --good: #43c25e; --bad: #e05555;
-    --power: #d9a521; --border: #32363e;
-  }
-  @media (prefers-color-scheme: light) {
-    :root { --bg: #f5f6f8; --panel: #fff; --panel2: #eef0f3; --text: #1c1e22;
-            --dim: #5c626b; --border: #d8dbe0; }
+    --bg: #101418; --raised: #1a1f25; --input: #15191e; --border: #3a3f47;
+    --link: #6b9eff; --text: #c8ccd1; --bright: #e0e0e0; --muted: #9aa0a7;
+    --faint: #808790; --good: #4caf7d; --bad: #e05555; --power: #d9a521;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: var(--bg);
-         color: var(--text); padding-bottom: env(safe-area-inset-bottom); }
-  .wrap { max-width: 900px; margin: 0 auto; padding: 12px; }
-  h1 { font-size: 20px; margin: 8px 0 12px; }
-  .panel { background: var(--panel); border: 1px solid var(--border);
-           border-radius: 10px; padding: 14px; margin-bottom: 12px; }
-  details.panel { padding: 0; }
-  details.panel > summary { padding: 12px 14px; cursor: pointer; font-weight: 600;
-    list-style: none; }
-  details.panel > summary::before { content: '▸ '; color: var(--dim); }
-  details.panel[open] > summary::before { content: '▾ '; }
-  details.panel > .body { padding: 0 14px 14px; }
-  label { display: block; color: var(--dim); font-size: 13px; margin: 10px 0 4px; }
-  select, input[type=text], input[type=number] { padding: 10px; border-radius: 8px;
-    border: 1px solid var(--border); background: var(--panel2); color: var(--text);
-    font-size: 16px; }
-  select, input[type=text] { width: 100%; }
-  input[type=number] { width: 90px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  button { border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 16px;
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text);
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; }
+  button { font: inherit; color: var(--text); background: var(--input);
+    border: 1px solid var(--border); border-radius: 7px; padding: 0.4rem 0.8rem;
     cursor: pointer; touch-action: manipulation; }
-  button:disabled { opacity: .4; cursor: default; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .toggle { display: flex; gap: 8px; align-items: center; font-size: 15px; margin: 6px 0; }
-  .chip { padding: 8px 14px; border-radius: 999px; }
-  .chip.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .chip.locked { opacity: .35; text-decoration: line-through; }
-  #buzz { width: 100%; padding: 22px; font-size: 24px; font-weight: 700;
-          background: var(--bad); border-color: var(--bad); color: #fff;
-          border-radius: 14px; }
-  #buzz.armed { background: var(--good); border-color: var(--good); }
-  .pad button { min-width: 64px; font-size: 20px; font-weight: 700; padding: 14px 10px; }
-  .pos { color: var(--good); } .neg { color: var(--bad); }
-  #qtext { font-size: 17px; min-height: 40px; }
-  #qtext .mark { color: var(--power); font-weight: 700; }
-  #qtext .unread { visibility: hidden; }
-  .ans { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--good);
-         background: var(--panel2); border-radius: 6px; }
-  .hist { font-size: 14px; color: var(--dim); margin: 6px 0 0; padding-left: 18px; }
-  .hist .pts { font-weight: 700; }
-  .muted { color: var(--dim); font-size: 13px; }
-  .bpart { margin: 8px 0; padding: 8px; background: var(--panel2); border-radius: 8px; }
+  button:disabled { opacity: .4; }
+  select, input[type=text], input[type=number], textarea { font: inherit;
+    color: var(--text); background: var(--input); border: 1px solid var(--border);
+    border-radius: 7px; padding: 0.35rem 0.5rem; }
+  .muted { color: var(--muted); font-size: 0.86rem; }
+  .faint { color: var(--faint); }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .grow { flex: 1; }
   .hidden { display: none !important; }
-  #progress { height: 5px; background: var(--panel2); border-radius: 3px; margin: 8px 0; }
-  #progressfill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; }
 
-  /* roster */
-  #teamsrow { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-  .teamcol { flex: 1 1 200px; min-width: 190px; background: var(--panel2);
-             border: 1px dashed var(--border); border-radius: 10px; padding: 8px; }
-  .teamcol.dragover { border-color: var(--accent); }
-  .teamhead { display: flex; justify-content: space-between; font-weight: 700;
-              padding: 2px 4px 8px; cursor: pointer; }
-  .pbox { display: flex; align-items: center; gap: 6px;
-          background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-          padding: 4px 6px; margin-bottom: 6px; }
-  .pbox.locked { opacity: .5; }
-  .pbox.dragging { opacity: .4; }
-  .pbox.droptarget { border-color: var(--accent); }
-  .pname { flex: 1; display: flex; justify-content: space-between; align-items: center;
-           gap: 6px; font-weight: 600; cursor: grab; touch-action: none; min-width: 0; }
-  .pname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pname .pscore { font-size: 17px; }
-  .pbtns { display: flex; gap: 3px; }
-  .pbtns button { padding: 7px 6px; font-size: 13px; font-weight: 700; min-width: 40px; }
+  .app { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh;
+    overflow-y: auto; }
+
+  header { display: flex; align-items: center; gap: 0.7rem;
+    padding: 0.45rem 1.1rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 1rem; margin: 0; color: var(--bright); font-weight: 650; }
+  header .setname { color: var(--muted); font-size: 0.88rem; }
+  header .setname b { color: var(--bright); }
+  header .hbtn { padding: 0.28rem 0.6rem; font-size: 0.88rem; }
+
+  main { padding: 0.9rem 1.4rem 1.1rem; }
+  .modeline { font-size: 0.85rem; color: var(--muted); padding-bottom: 0.25rem;
+    min-height: 1.3em; }
+  .modeline .warn { color: var(--power); }
+  .qtext { font-size: 1.16rem; line-height: 1.8; }
+  .qtext .mark { color: var(--power); font-weight: 700; }
+  .qtext .unread { visibility: hidden; }
+  .qtext .w { cursor: pointer; border-radius: 3px; }
+  .qtext .w:hover { background: rgba(107,158,255,0.18); }
+  .buzzword { background: rgba(224,85,85,0.3); outline: 1px solid var(--bad); border-radius: 3px; }
+  .anspanel { padding: 0.45rem 0 0.1rem; font-size: 1.08rem; }
+  .anspanel .lbl { color: var(--faint); font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-right: 0.5rem; }
+  .anspanel u, .anspanel b { color: var(--bright); }
+
+  .bonus { margin-top: 0.9rem; border-top: 1px solid var(--border); padding-top: 0.7rem; }
+  .bonus .blabel { color: var(--faint); font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.15rem; }
+  .bonus .leadin, .bpart .bq { font-size: 1.16rem; line-height: 1.8; }
+  .bpart { margin: 0.45rem 0; }
+  .bpart .bans { font-size: 1rem; color: var(--muted); margin-top: 0.05rem;
+    display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .bpart .bans u, .bpart .bans b { color: var(--bright); }
+  .bpart .bans button { padding: 0.2rem 0.7rem; font-size: 0.88rem; }
+  .bpart .scored { font-weight: 700; }
+
+  .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+    margin-top: 0.8rem; }
+  .buzzbtn { padding: 0.6rem 1.6rem; font-size: 1.05rem; font-weight: 700;
+    border-radius: 9px; background: var(--good); border-color: var(--good); color: #06120b; }
+  .buzzbtn.buzzed { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .progress { height: 4px; background: var(--input); border-radius: 2px; margin-top: 0.5rem; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--link); border-radius: 2px; }
+  .adjrow { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+    margin-top: 0.6rem; max-width: 46rem; }
+  .adjrow input { flex: 1; min-width: 10rem; padding: 0.5rem 0.7rem; }
+  .adjrow .verdicthint { font-size: 0.88rem; }
+
+  .scoring { border-top: 2px solid var(--border); margin-top: 0.9rem;
+    padding: 0.7rem 1.4rem 2rem; display: flex; gap: 2.2rem; flex-wrap: wrap; }
+  .team { flex: 1; min-width: 20rem; }
+  .teamhead { display: flex; justify-content: center; align-items: baseline; gap: 0.7rem;
+    padding: 0.15rem 0 0.45rem; }
+  .teamhead .tname { font-size: 1.15rem; font-weight: 700; color: var(--bright); cursor: pointer; }
+  .teamhead .tname.unassigned { color: var(--faint); cursor: default; }
+  .teamhead .tscore { font-size: 1.5rem; font-weight: 800; color: var(--bright); }
+  .team.dragover { outline: 1px dashed var(--link); outline-offset: 4px; border-radius: 8px; }
+  .prow { display: flex; align-items: center; gap: 0.6rem;
+    background: var(--raised); border: 1px solid var(--border); border-radius: 9px;
+    padding: 0.45rem 0.7rem; margin-bottom: 0.45rem; }
+  .prow.locked { opacity: 0.45; }
+  .prow.dragging { opacity: 0.4; }
+  .prow.droptarget { border-color: var(--link); }
+  .prow .handle { color: var(--faint); cursor: grab; touch-action: none; padding: 0 0.15rem; }
+  .prow .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-weight: 600; font-size: 1.02rem; }
+  .prow .pscore { font-weight: 800; font-size: 1.1rem; color: var(--bright);
+    min-width: 2.2ch; text-align: right; }
+  .prow .pbtns { display: flex; gap: 4px; }
+  .prow .pbtns button { padding: 0.32rem 0.55rem; font-size: 0.86rem; font-weight: 700;
+    border-radius: 6px; min-width: 2.9rem; }
+
+  .histbar { width: 16.5rem; flex-shrink: 0; border-left: 1px solid var(--border);
+    height: 100vh; overflow-y: auto; padding: 0.6rem 0.8rem 1rem; }
+  .histbar h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--faint); margin: 0.2rem 0 0.4rem; font-weight: 600; position: sticky;
+    top: 0; background: var(--bg); padding: 0.2rem 0; }
+  .histlist { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+  .histlist .tuhead { color: var(--faint); font-size: 0.76rem; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 0.5rem 0 0.1rem; border-bottom: 1px solid var(--border);
+    margin-bottom: 0.15rem; }
+  .histlist li { padding: 0.15rem 0; color: var(--muted); display: flex; gap: 0.5rem; }
+  .histlist .pts { font-weight: 700; min-width: 2.2rem; text-align: right; }
+
+  @media (max-width: 900px) {
+    body { flex-direction: column; }
+    .app { height: auto; overflow: visible; }
+    .histbar { width: 100%; height: auto; max-height: 40vh; border-left: none;
+      border-top: 1px solid var(--border); }
+    .qtext, .bonus .leadin, .bpart .bq { font-size: 1.05rem; }
+    .scoring { gap: 1rem; padding: 0.6rem 1rem 1rem; }
+    .team { min-width: 100%; }
+    .buzzbtn { flex: 1; padding: 0.85rem; }
+    header .setname { width: 100%; order: 5; }
+  }
+
+  .sheet { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; z-index: 40; }
+  .sheet.open { display: flex; align-items: center; justify-content: center; }
+  .sheet .card { background: var(--raised); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1.1rem 1.2rem 1.3rem; width: 100%; max-width: 560px;
+    max-height: 85vh; overflow-y: auto; margin: 0 0.8rem; }
+  .sheet h3 { margin: 0 0 0.6rem; color: var(--bright); font-size: 1rem; }
+  .srow { display: flex; gap: 0.5rem; align-items: center; padding: 0.3rem 0; }
+  .sheetfoot { margin-top: 0.9rem; display: flex; justify-content: flex-end; gap: 0.5rem; }
+  .primary { background: var(--link); border-color: var(--link); color: #fff; }
+
+  .tblock { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.8rem;
+    margin-bottom: 0.7rem; background: var(--input); }
+  .tblock input, .tblock textarea { width: 100%; background: var(--bg); }
+  .tblock label { display: block; color: var(--faint); font-size: 0.78rem;
+    text-transform: uppercase; letter-spacing: 0.05em; margin: 0.4rem 0 0.2rem; }
+  .tblock textarea { resize: vertical; min-height: 3.2rem; }
+
+  #setlist { width: 100%; margin-top: 0.5rem; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>qb-moderator</h1>
+<div class="app">
+  <header>
+    <h1>moderator</h1>
+    <span class="setname" id="setname">no packet loaded</span>
+    <span class="grow"></span>
+    <button class="hbtn" id="setbtn">📦 Set</button>
+    <select class="hbtn" id="modepick" title="Reading mode">
+      <option value="audio">♪ TTS audio</option>
+      <option value="reveal">Word-by-word reveal</option>
+      <option value="text">Full text (I read)</option>
+    </select>
+    <button class="hbtn" id="rosterbtn">👥 Players</button>
+    <button class="hbtn" id="gearbtn" title="More settings">⚙</button>
+  </header>
 
-  <details class="panel" id="pickerpanel" open>
-    <summary id="pickersummary">Set &amp; packet</summary>
-    <div class="body">
-      <input type="text" id="setsearch" placeholder="Search sets… (e.g. 2024 ACF Regionals)" autocomplete="off">
-      <select id="setpick" size="6" style="margin-top:8px"></select>
-      <div class="row" style="margin-top:8px">
-        <select id="packetpick" style="flex:1"></select>
-        <button class="primary" id="loadbtn" disabled>Read this packet</button>
-      </div>
-      <div class="muted" id="pickerstatus">Loading catalog…</div>
+  <main>
+    <div class="modeline" id="modeline"></div>
+    <div class="qtext" id="qtext"><i class="faint">Pick a set and packet (📦) to start.</i></div>
+    <div class="progress hidden" id="progress"><i id="progressfill"></i></div>
+    <div class="anspanel hidden" id="anspanel"></div>
+    <div class="bonus hidden" id="bonuspanel"></div>
+    <div class="controls" id="controls">
+      <button class="buzzbtn hidden" id="buzz">BUZZ (space)</button>
+      <button class="hidden" id="playbtn">⏸</button>
+      <button class="hidden" id="finishedbtn">Finished</button>
+      <button class="hidden" id="deadbtn">Dead</button>
+      <span class="grow"></span>
+      <button class="hidden" id="nextbtn">Next ▸</button>
     </div>
-  </details>
-
-  <details class="panel" id="settingspanel">
-    <summary>Settings <span class="muted" id="settingsbrief"></span></summary>
-    <div class="body">
-      <label>Reading (applies from the next question)</label>
-      <div class="toggle"><input type="radio" name="rmode" value="audio" id="rmAudio" checked>
-        <label for="rmAudio" style="margin:0;color:var(--text)">TTS audio — text &amp; answer hidden until the end (host can play)</label></div>
-      <div class="toggle"><input type="radio" name="rmode" value="reveal" id="rmReveal">
-        <label for="rmReveal" style="margin:0;color:var(--text)">Word-by-word reveal (host can play)</label>
-        <input type="number" id="wpm" value="250" min="80" max="800"> <span class="muted">wpm</span></div>
-      <div class="toggle"><input type="radio" name="rmode" value="text" id="rmText">
-        <label for="rmText" style="margin:0;color:var(--text)">Show full text — I’m the moderator, I read it aloud myself</label></div>
-      <div style="margin-top:8px">
-        <div class="toggle"><input type="checkbox" id="optScoring" checked> Keep score</div>
-        <div class="toggle"><input type="checkbox" id="optSuper"> Superpowers (+20)</div>
-        <div class="toggle"><input type="checkbox" id="optBonuses" checked> Bonuses</div>
-        <div class="toggle"><input type="checkbox" id="optChecker" checked> Suggest verdicts (type the given answer)</div>
-      </div>
+    <div class="adjrow hidden" id="adjrow">
+      <input type="text" id="givenanswer" placeholder="What did they say? (optional)">
+      <span class="verdicthint" id="suggestion"></span>
+      <button class="good" id="vcorrect">✓</button>
+      <button class="bad" id="vwrong">✗</button>
     </div>
-  </details>
+  </main>
 
-  <div class="panel">
-    <div class="row" style="justify-content:space-between">
-      <div><b id="qlabel">No packet loaded</b> <span class="muted" id="qmeta"></span></div>
-      <div class="row">
-        <button id="playbtn" class="hidden">▶︎ / ⏸</button>
-        <button id="finishedbtn" class="hidden" title="Mark reading finished (negs close)">Finished</button>
-        <button id="deadbtn" class="hidden">Dead</button>
-        <button id="nextbtn" class="hidden">Next ▸</button>
-      </div>
+  <div class="scoring" id="scoring"></div>
+</div>
+
+<div class="histbar">
+  <h2>History</h2>
+  <ul class="histlist" id="histlist"></ul>
+</div>
+
+<!-- set & packet sheet -->
+<div class="sheet" id="setsheet">
+  <div class="card">
+    <h3>Set &amp; packet</h3>
+    <input type="text" id="setsearch" placeholder="Search sets…" autocomplete="off" style="width:100%">
+    <select id="setlist" size="8"></select>
+    <div class="srow" style="margin-top:0.5rem">
+      <select id="packetpick" style="flex:1"></select>
     </div>
-    <div id="progress" class="hidden"><div id="progressfill"></div></div>
-    <div id="qtext"><i class="muted">Pick a set and packet above to start reading.</i></div>
-    <div class="ans hidden" id="anspanel"></div>
-  </div>
-
-  <div class="panel">
-    <button id="buzz" class="hidden">BUZZ&nbsp;<span class="muted" style="font-weight:400">(space)</span></button>
-    <div id="adjudicate" class="hidden">
-      <label>Who buzzed? (or tap a point button on their row below)</label>
-      <div class="row" id="playerchips"></div>
-      <div id="checkerrow" class="row" style="margin-top:8px">
-        <input type="text" id="givenanswer" placeholder="What did they say? (optional — checker suggests)" style="flex:1">
-      </div>
-      <div class="muted" id="suggestion"></div>
-      <div class="row pad" style="margin-top:10px" id="padrow">
-        <button id="vcorrect" class="pos">✓ Correct</button>
-        <button id="vwrong" class="neg">✗ Wrong</button>
-      </div>
+    <div class="muted" id="setstatus">Loading catalog…</div>
+    <div class="sheetfoot">
+      <button onclick="document.getElementById('setsheet').classList.remove('open')">Cancel</button>
+      <button class="primary" id="loadbtn" disabled>Read this packet</button>
     </div>
-  </div>
-
-  <div class="panel hidden" id="bonuspanel"></div>
-
-  <!-- roster: teams + players, drag to move/reorder, tap points to score -->
-  <div class="panel">
-    <div id="teamsrow"></div>
-    <div class="row" style="margin-top:10px">
-      <input type="text" id="newplayer" placeholder="New player" style="flex:1;min-width:120px">
-      <button id="addplayerbtn">+ Player</button>
-      <button id="addteambtn">+ Team</button>
-    </div>
-    <div class="muted">Drag a player’s name onto a team, or onto another player to
-      reorder. Point buttons: during reading they record that player’s buzz with
-      those points; otherwise they adjust the score. Tap a team name to rename.</div>
-  </div>
-
-  <div class="panel">
-    <b>History</b>
-    <ul class="hist" id="history"></ul>
   </div>
 </div>
+
+<!-- roster sheet: bulk team/player entry -->
+<div class="sheet" id="rostersheet">
+  <div class="card">
+    <h3>Players &amp; teams</h3>
+    <div class="muted" style="margin-bottom:0.6rem">One name per line (or commas). Leave the
+      team name blank for free-agent players. Removing a name here removes the player.</div>
+    <div id="tblocks"></div>
+    <button id="addteamblock">+ add another team</button>
+    <div class="sheetfoot">
+      <button onclick="document.getElementById('rostersheet').classList.remove('open')">Cancel</button>
+      <button class="primary" id="rostersave">Save roster</button>
+    </div>
+  </div>
+</div>
+
+<!-- settings sheet -->
+<div class="sheet" id="settingsheet">
+  <div class="card">
+    <h3>Settings</h3>
+    <div class="srow"><input type="checkbox" checked id="optScoring"><label for="optScoring">Keep score</label></div>
+    <div class="srow"><input type="checkbox" id="optSuper"><label for="optSuper">Superpowers (+20)</label></div>
+    <div class="srow"><input type="checkbox" checked id="optBonuses"><label for="optBonuses">Bonuses</label></div>
+    <div class="srow"><input type="checkbox" checked id="optChecker"><label for="optChecker">Checker verdict suggestions</label></div>
+    <div class="srow"><label for="wpm">Reveal speed</label>
+      <input type="number" id="wpm" value="250" min="80" max="800" style="width:5rem">
+      <span class="muted">wpm</span></div>
+    <div class="sheetfoot">
+      <button onclick="document.getElementById('settingsheet').classList.remove('open')">Done</button>
+    </div>
+  </div>
+</div>
+
 <script src="vendor/answer_checker.js"></script>
 <script src="vendor/reveal_units.js"></script>
 <script type="module" src="app.js"></script>

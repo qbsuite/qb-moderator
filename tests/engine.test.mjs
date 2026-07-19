@@ -244,9 +244,11 @@ test('configure changes settings live; pad re-derives; log untouched', () => {
   assert.equal(s.config.points.superpower, 20);        // deep merge kept it
 });
 
-test('dead + next cycle', () => {
+test('dead + next cycle (dead is logged for history)', () => {
   let s = start();
   s = play(s, { type: 'dead' }, { type: 'next' });
   assert.equal(s.phase, 'idle');
   assert.equal(s.current, null);
+  assert.deepEqual(s.log.map(e => e.kind), ['dead']);
+  assert.equal(scores(s).A, 0);
 });

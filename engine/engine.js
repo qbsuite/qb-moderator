@@ -229,7 +229,15 @@ export function reduce(state, event) {
 
   if (type === 'dead') {
     if (state.phase !== 'reading' && state.phase !== 'buzzed') return state;
-    return { ...state, phase: 'done', current: { ...state.current, buzz: null } };
+    return {
+      ...state,
+      phase: 'done',
+      current: { ...state.current, buzz: null },
+      // Logged so game history shows dead tossups, not silent gaps.
+      log: [...state.log, { qid: state.current.qid, player: null, kind: 'dead',
+                            points: 0, unitIdx: null, ts: event.ts ?? null,
+                            source: 'host', answer: null }],
+    };
   }
 
   if (type === 'next') {
