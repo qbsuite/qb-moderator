@@ -17,22 +17,23 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: var(--bg);
          color: var(--text); padding-bottom: env(safe-area-inset-bottom); }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 12px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 12px; }
   h1 { font-size: 20px; margin: 8px 0 12px; }
   .panel { background: var(--panel); border: 1px solid var(--border);
            border-radius: 10px; padding: 14px; margin-bottom: 12px; }
   label { display: block; color: var(--dim); font-size: 13px; margin: 10px 0 4px; }
-  select, input[type=text] { width: 100%; padding: 10px; border-radius: 8px;
+  select, input[type=text], input[type=number] { padding: 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--panel2); color: var(--text);
     font-size: 16px; }
+  select, input[type=text] { width: 100%; }
+  input[type=number] { width: 90px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   button { border: 1px solid var(--border); background: var(--panel2);
     color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 16px;
     cursor: pointer; touch-action: manipulation; }
   button:disabled { opacity: .4; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .toggle { display: flex; gap: 8px; align-items: center; color: var(--text);
-            font-size: 15px; margin: 6px 0; }
+  .toggle { display: flex; gap: 8px; align-items: center; font-size: 15px; margin: 6px 0; }
   .chip { padding: 8px 14px; border-radius: 999px; }
   .chip.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chip.locked { opacity: .35; text-decoration: line-through; }
@@ -41,24 +42,36 @@
           border-radius: 14px; }
   #buzz.armed { background: var(--good); border-color: var(--good); }
   .pad button { min-width: 64px; font-size: 20px; font-weight: 700; padding: 14px 10px; }
-  .pad .pos { color: var(--good); } .pad .neg { color: var(--bad); }
-  #qtext { font-size: 17px; }
+  .pad .pos, .pos { color: var(--good); } .pad .neg, .neg { color: var(--bad); }
+  #qtext { font-size: 17px; min-height: 40px; }
   #qtext .mark { color: var(--power); font-weight: 700; }
-  #qtext .read { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  #qtext .unread { visibility: hidden; }
   .ans { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--good);
          background: var(--panel2); border-radius: 6px; }
-  .score { display: flex; gap: 14px; flex-wrap: wrap; font-size: 18px; }
-  .score b { font-size: 22px; }
-  .hist { font-size: 14px; color: var(--dim); }
-  .hist li { margin: 3px 0; }
+  .hist { font-size: 14px; color: var(--dim); margin: 6px 0 0; padding-left: 18px; }
   .hist .pts { font-weight: 700; }
-  .hist .pos2 { color: var(--good); } .hist .neg2 { color: var(--bad); }
   .muted { color: var(--dim); font-size: 13px; }
-  .bonus part-label { font-weight: 600; }
   .bpart { margin: 8px 0; padding: 8px; background: var(--panel2); border-radius: 8px; }
   .hidden { display: none !important; }
   #progress { height: 5px; background: var(--panel2); border-radius: 3px; margin: 8px 0; }
   #progressfill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; }
+
+  /* roster */
+  #teamsrow { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+  .teamcol { flex: 1 1 160px; min-width: 150px; background: var(--panel2);
+             border: 1px dashed var(--border); border-radius: 10px; padding: 8px; }
+  .teamcol.dragover { border-color: var(--accent); }
+  .teamhead { display: flex; justify-content: space-between; font-weight: 700;
+              padding: 2px 4px 8px; cursor: pointer; }
+  .pbox { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 6px 8px; margin-bottom: 6px; }
+  .pbox.locked { opacity: .5; }
+  .pbox.dragging { opacity: .4; }
+  .pname { display: flex; justify-content: space-between; align-items: center;
+           font-weight: 600; cursor: grab; touch-action: none; padding-bottom: 4px; }
+  .pname .pscore { font-size: 18px; }
+  .pbtns { display: flex; gap: 4px; }
+  .pbtns button { flex: 1; padding: 8px 2px; font-size: 14px; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -72,14 +85,23 @@
     <select id="setpick" size="6"></select>
     <label>Packet</label>
     <select id="packetpick"></select>
-    <label>Players (comma-separated)</label>
-    <input type="text" id="playersin" placeholder="Alice, Bob, Carol">
+
+    <label>Reading</label>
+    <div class="toggle"><input type="radio" name="rmode" value="audio" id="rmAudio" checked>
+      <label for="rmAudio" style="margin:0;color:var(--text)">TTS audio — text &amp; answer hidden until the end (host can play)</label></div>
+    <div class="toggle"><input type="radio" name="rmode" value="reveal" id="rmReveal">
+      <label for="rmReveal" style="margin:0;color:var(--text)">Word-by-word reveal (host can play) — <span class="row" style="display:inline-flex"><input type="number" id="wpm" value="250" min="80" max="800"> wpm</span></label></div>
+    <div class="toggle"><input type="radio" name="rmode" value="text" id="rmText">
+      <label for="rmText" style="margin:0;color:var(--text)">Show full text — I’m the moderator, I read it aloud myself</label></div>
+
     <div style="margin-top:10px">
       <div class="toggle"><input type="checkbox" id="optScoring" checked> Keep score</div>
       <div class="toggle"><input type="checkbox" id="optSuper"> Superpowers (+20)</div>
-      <div class="toggle"><input type="checkbox" id="optAudio" checked> Read aloud (TTS audio) — off = I’ll read from the screen</div>
+      <div class="toggle"><input type="checkbox" id="optBonuses" checked> Bonuses</div>
       <div class="toggle"><input type="checkbox" id="optChecker" checked> Suggest verdicts (type the given answer)</div>
     </div>
+    <label>Players (comma-separated — you can also add/drag at the bottom later)</label>
+    <input type="text" id="playersin" placeholder="Alice, Bob, Carol">
     <div class="row" style="margin-top:12px">
       <button class="primary" id="startbtn" disabled>Start</button>
       <span class="muted" id="setupstatus">Loading catalog…</span>
@@ -92,21 +114,21 @@
       <div class="row" style="justify-content:space-between">
         <div><b id="qlabel"></b> <span class="muted" id="qmeta"></span></div>
         <div class="row">
-          <button id="playbtn">▶</button>
+          <button id="playbtn">▶︎ / ⏸</button>
           <button id="finishedbtn" title="Mark reading finished (negs close)">Finished</button>
           <button id="deadbtn">Dead</button>
           <button id="nextbtn">Next ▸</button>
         </div>
       </div>
       <div id="progress"><div id="progressfill"></div></div>
-      <div id="qtext" class="panel2"></div>
+      <div id="qtext"></div>
       <div class="ans" id="anspanel"></div>
     </div>
 
     <div class="panel">
       <button id="buzz">BUZZ&nbsp;<span class="muted" style="font-weight:400">(space)</span></button>
       <div id="adjudicate" class="hidden">
-        <label>Who buzzed?</label>
+        <label>Who buzzed? (or tap a point button on their box below)</label>
         <div class="row" id="playerchips"></div>
         <div id="checkerrow" class="row" style="margin-top:8px">
           <input type="text" id="givenanswer" placeholder="What did they say? (optional — checker suggests)" style="flex:1">
@@ -121,9 +143,19 @@
 
     <div class="panel" id="bonuspanel"></div>
 
+    <!-- roster: teams + players, drag to move, tap points to score -->
     <div class="panel">
-      <div class="score" id="scoreboard"></div>
+      <div id="teamsrow"></div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="newplayer" placeholder="New player" style="flex:1;min-width:120px">
+        <button id="addplayerbtn">+ Player</button>
+        <button id="addteambtn">+ Team</button>
+      </div>
+      <div class="muted">Drag a player’s name between team boxes. Point buttons: during
+        reading they record that player’s buzz with those points; otherwise they’re a
+        direct score adjustment. Tap a team name to rename.</div>
     </div>
+
     <div class="panel">
       <b>History</b>
       <ul class="hist" id="history"></ul>

@@ -30,6 +30,7 @@ export function initialState(config = {}) {
   return {
     config: defaultConfig(config),
     players: [],
+    teams: {},            // player -> team name (absent/null = unassigned)
     phase: 'idle',        // idle | reading | buzzed | done
     current: null,        // {qid, powerIdx, superpowerIdx, unitCount,
                           //  readingFinished, buzz, lockouts: []}
@@ -45,6 +46,25 @@ export function scores(state) {
     if (e.player != null) totals[e.player] = (totals[e.player] || 0) + e.points;
   }
   return totals;
+}
+
+/** Total points per team (players without a team are excluded). */
+export function teamScores(state) {
+  const per = scores(state);
+  const totals = {};
+  for (const p of state.players) {
+    const t = state.teams[p];
+    if (t) totals[t] = (totals[t] || 0) + per[p];
+  }
+  return totals;
+}
+
+/** A wrong buzz locks out the buzzer's whole team (standard rules);
+ * unassigned players lock out individually. */
+function teammates(state, player) {
+  const t = state.teams[player];
+  if (!t) return [player];
+  return state.players.filter(p => state.teams[p] === t);
 }
 
 /** Kind for a correct buzz at unitIdx, per the rule table. An unknown
@@ -77,10 +97,20 @@ export function reduce(state, event) {
 
   if (type === 'player_join') {
     if (state.players.includes(event.player)) return state;
-    return { ...state, players: [...state.players, event.player] };
+    return {
+      ...state,
+      players: [...state.players, event.player],
+      teams: { ...state.teams, [event.player]: event.team ?? null },
+    };
   }
   if (type === 'player_leave') {
-    return { ...state, players: state.players.filter(p => p !== event.player) };
+    const teams = { ...state.teams };
+    delete teams[event.player];
+    return { ...state, teams, players: state.players.filter(p => p !== event.player) };
+  }
+  if (type === 'player_move') {
+    if (!state.players.includes(event.player)) return state;
+    return { ...state, teams: { ...state.teams, [event.player]: event.team ?? null } };
   }
 
   if (type === 'question_start') {
@@ -148,7 +178,7 @@ export function reduce(state, event) {
       points: event.points ?? (neg ? state.config.points.neg : 0), unitIdx, ts,
       source: event.source ?? 'host', answer: event.answer ?? null,
     };
-    const lockouts = [...cur.lockouts, player];
+    const lockouts = [...new Set([...cur.lockouts, ...teammates(state, player)])];
     // Everyone locked out after reading finished -> nothing left, dead.
     const exhausted = cur.readingFinished
       && state.players.length > 0

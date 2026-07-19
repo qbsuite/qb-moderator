@@ -1,7 +1,7 @@
 // Engine rule-table vectors. Run: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, reduce, scores, defaultConfig } from '../engine/engine.js';
+import { initialState, reduce, scores, teamScores, defaultConfig } from '../engine/engine.js';
 
 const play = (state, ...events) => events.reduce(reduce, state);
 
@@ -170,6 +170,51 @@ test('impossible transitions are ignored', () => {
   s = reduce(s, { type: 'buzz', player: 'A', unitIdx: 5 });
   assert.equal(reduce(s, { type: 'buzz', player: 'B', unitIdx: 6 }).current.buzz.player, 'A');
   assert.equal(reduce(s, { type: 'next' }).phase, 'buzzed'); // next only from done
+});
+
+test('a wrong buzz locks out the whole team; solo players lock alone', () => {
+  let s = initialState();
+  s = play(s,
+    { type: 'player_join', player: 'A1', team: 'Red' },
+    { type: 'player_join', player: 'A2', team: 'Red' },
+    { type: 'player_join', player: 'B1', team: 'Blue' },
+    { type: 'player_join', player: 'Solo' },
+    { type: 'question_start', qid: 'q1', powerIdx: 10, unitCount: 40 },
+    { type: 'buzz', player: 'A1', unitIdx: 5 },
+    { type: 'verdict', result: 'wrong' });
+  assert.deepEqual([...s.current.lockouts].sort(), ['A1', 'A2']);
+  // A2 (teammate) cannot buzz; Blue and Solo can.
+  assert.equal(reduce(s, { type: 'buzz', player: 'A2', unitIdx: 6 }).phase, 'reading');
+  s = play(s,
+    { type: 'buzz', player: 'B1', unitIdx: 12 },
+    { type: 'verdict', result: 'correct' });
+  assert.deepEqual(teamScores(s), { Red: -5, Blue: 10 });
+  assert.equal(scores(s).Solo, 0);
+});
+
+test('team exhaustion after reading finished deads the question', () => {
+  let s = initialState();
+  s = play(s,
+    { type: 'player_join', player: 'A1', team: 'Red' },
+    { type: 'player_join', player: 'A2', team: 'Red' },
+    { type: 'player_join', player: 'B1', team: 'Blue' },
+    { type: 'question_start', qid: 'q1', powerIdx: null, unitCount: 40 },
+    { type: 'reading_finished' },
+    { type: 'buzz', player: 'A1', unitIdx: 39 },
+    { type: 'verdict', result: 'wrong' },        // locks A1+A2
+    { type: 'buzz', player: 'B1', unitIdx: 39 },
+    { type: 'verdict', result: 'wrong' });       // locks B1 -> everyone
+  assert.equal(s.phase, 'done');
+});
+
+test('player_move reassigns teams', () => {
+  let s = initialState();
+  s = play(s,
+    { type: 'player_join', player: 'A', team: 'Red' },
+    { type: 'player_move', player: 'A', team: 'Blue' });
+  assert.equal(s.teams.A, 'Blue');
+  s = reduce(s, { type: 'player_move', player: 'A', team: null });
+  assert.equal(s.teams.A, null);
 });
 
 test('dead + next cycle', () => {

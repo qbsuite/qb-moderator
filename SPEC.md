@@ -64,12 +64,32 @@ entries (buzz order, lockouts, and history still work).
 | `dead` | `{}` | give up on the question: phase → `done`, no score |
 | `next` | `{}` | ready for the next `question_start` |
 | `override` | `{entryIdx, points}` | edits a past log entry (scores recompute) |
-| `player_join` / `player_leave` | `{player}` | roster |
+| `player_join` / `player_leave` | `{player, team?}` | roster; team is optional |
+| `player_move` | `{player, team\|null}` | reassign a player's team |
 
-State shape: `{config, players[], phase, current: {qid, powerIdx,
-superpowerIdx, unitCount, readingFinished, buzz: {player, unitIdx} |
-null, lockouts: Set}, log: [{qid, player, points, kind, unitIdx, ts}]}`.
-`scores(state)` and `history(state)` are selectors over `log`.
+State shape: `{config, players[], teams: {player: teamName|null}, phase,
+current: {qid, powerIdx, superpowerIdx, unitCount, readingFinished,
+buzz: {player, unitIdx} | null, lockouts: []}, log: [{qid, player,
+points, kind, unitIdx, ts}]}`. `scores(state)` / `teamScores(state)` are
+selectors over `log`. **Teams**: a wrong buzz locks out the buzzer's
+whole team (standard rules); unassigned players lock out individually;
+the question deads when every player is locked after reading finishes.
+
+## Reading modes (app-level; the engine only sees events)
+
+- `audio` — qb-audio TTS; question text AND answer hidden until the
+  question ends, so the host can play. Position from the audio clock via
+  sidecars. Falls back to `reveal` when a qid has no audio (never to
+  full text — no spoilers).
+- `reveal` — reader-contract word-by-word reveal (wpm + slow note-run
+  spans); host can play; answer hidden until done.
+- `text` — full text + answer always visible: the host is the moderator
+  and reads aloud themselves. Position unknown (`unitIdx: null`).
+
+Bonuses are an app-level toggle (engine-wise they're `award` events).
+The roster UI exposes per-player point buttons (pointPad + 0): during
+reading they capture buzz + verdict in one tap; otherwise they're direct
+`award` adjustments.
 
 ## Reveal units (shared contract with the reader)
 
