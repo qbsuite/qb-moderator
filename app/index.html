@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>qb-moderator</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --panel2: #24272e; --text: #e6e6e6;
+    --dim: #9aa0a8; --accent: #4da3ff; --good: #43c25e; --bad: #e05555;
+    --power: #d9a521; --border: #32363e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f6f8; --panel: #fff; --panel2: #eef0f3; --text: #1c1e22;
+            --dim: #5c626b; --border: #d8dbe0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: var(--bg);
+         color: var(--text); padding-bottom: env(safe-area-inset-bottom); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 12px; }
+  h1 { font-size: 20px; margin: 8px 0 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+           border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  label { display: block; color: var(--dim); font-size: 13px; margin: 10px 0 4px; }
+  select, input[type=text] { width: 100%; padding: 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+    font-size: 16px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button { border: 1px solid var(--border); background: var(--panel2);
+    color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 16px;
+    cursor: pointer; touch-action: manipulation; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toggle { display: flex; gap: 8px; align-items: center; color: var(--text);
+            font-size: 15px; margin: 6px 0; }
+  .chip { padding: 8px 14px; border-radius: 999px; }
+  .chip.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip.locked { opacity: .35; text-decoration: line-through; }
+  #buzz { width: 100%; padding: 22px; font-size: 24px; font-weight: 700;
+          background: var(--bad); border-color: var(--bad); color: #fff;
+          border-radius: 14px; }
+  #buzz.armed { background: var(--good); border-color: var(--good); }
+  .pad button { min-width: 64px; font-size: 20px; font-weight: 700; padding: 14px 10px; }
+  .pad .pos { color: var(--good); } .pad .neg { color: var(--bad); }
+  #qtext { font-size: 17px; }
+  #qtext .mark { color: var(--power); font-weight: 700; }
+  #qtext .read { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .ans { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--good);
+         background: var(--panel2); border-radius: 6px; }
+  .score { display: flex; gap: 14px; flex-wrap: wrap; font-size: 18px; }
+  .score b { font-size: 22px; }
+  .hist { font-size: 14px; color: var(--dim); }
+  .hist li { margin: 3px 0; }
+  .hist .pts { font-weight: 700; }
+  .hist .pos2 { color: var(--good); } .hist .neg2 { color: var(--bad); }
+  .muted { color: var(--dim); font-size: 13px; }
+  .bonus part-label { font-weight: 600; }
+  .bpart { margin: 8px 0; padding: 8px; background: var(--panel2); border-radius: 8px; }
+  .hidden { display: none !important; }
+  #progress { height: 5px; background: var(--panel2); border-radius: 3px; margin: 8px 0; }
+  #progressfill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>qb-moderator <span class="muted">solo host · v0</span></h1>
+
+  <!-- SETUP -->
+  <div id="setup" class="panel">
+    <label>Set</label>
+    <input type="text" id="setsearch" placeholder="Search sets… (e.g. 2024 ACF Regionals)" autocomplete="off">
+    <select id="setpick" size="6"></select>
+    <label>Packet</label>
+    <select id="packetpick"></select>
+    <label>Players (comma-separated)</label>
+    <input type="text" id="playersin" placeholder="Alice, Bob, Carol">
+    <div style="margin-top:10px">
+      <div class="toggle"><input type="checkbox" id="optScoring" checked> Keep score</div>
+      <div class="toggle"><input type="checkbox" id="optSuper"> Superpowers (+20)</div>
+      <div class="toggle"><input type="checkbox" id="optAudio" checked> Read aloud (TTS audio) — off = I’ll read from the screen</div>
+      <div class="toggle"><input type="checkbox" id="optChecker" checked> Suggest verdicts (type the given answer)</div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="startbtn" disabled>Start</button>
+      <span class="muted" id="setupstatus">Loading catalog…</span>
+    </div>
+  </div>
+
+  <!-- GAME -->
+  <div id="game" class="hidden">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <div><b id="qlabel"></b> <span class="muted" id="qmeta"></span></div>
+        <div class="row">
+          <button id="playbtn">▶</button>
+          <button id="finishedbtn" title="Mark reading finished (negs close)">Finished</button>
+          <button id="deadbtn">Dead</button>
+          <button id="nextbtn">Next ▸</button>
+        </div>
+      </div>
+      <div id="progress"><div id="progressfill"></div></div>
+      <div id="qtext" class="panel2"></div>
+      <div class="ans" id="anspanel"></div>
+    </div>
+
+    <div class="panel">
+      <button id="buzz">BUZZ&nbsp;<span class="muted" style="font-weight:400">(space)</span></button>
+      <div id="adjudicate" class="hidden">
+        <label>Who buzzed?</label>
+        <div class="row" id="playerchips"></div>
+        <div id="checkerrow" class="row" style="margin-top:8px">
+          <input type="text" id="givenanswer" placeholder="What did they say? (optional — checker suggests)" style="flex:1">
+        </div>
+        <div class="muted" id="suggestion"></div>
+        <div class="row pad" style="margin-top:10px" id="padrow">
+          <button id="vcorrect" class="pos">✓ Correct</button>
+          <button id="vwrong" class="neg">✗ Wrong</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="bonuspanel"></div>
+
+    <div class="panel">
+      <div class="score" id="scoreboard"></div>
+    </div>
+    <div class="panel">
+      <b>History</b>
+      <ul class="hist" id="history"></ul>
+    </div>
+  </div>
+</div>
+<script src="vendor/answer_checker.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
