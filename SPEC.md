@@ -65,7 +65,8 @@ entries (buzz order, lockouts, and history still work).
 | `next` | `{}` | ready for the next `question_start` |
 | `override` | `{entryIdx, points}` | edits a past log entry (scores recompute) |
 | `player_join` / `player_leave` | `{player, team?}` | roster; team is optional |
-| `player_move` | `{player, team\|null}` | reassign a player's team |
+| `player_move` | `{player, team?, before?}` | reassign team and/or reorder: re-inserted before `before` (or at the end); `team` omitted = keep (pure reorder) |
+| `configure` | `{patch}` | live settings change: merges scoring/points/humanJudge; pointPad re-derives from new points unless the patch pins one; the log is untouched |
 
 State shape: `{config, players[], teams: {player: teamName|null}, phase,
 current: {qid, powerIdx, superpowerIdx, unitCount, readingFinished,

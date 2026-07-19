@@ -217,6 +217,33 @@ test('player_move reassigns teams', () => {
   assert.equal(s.teams.A, null);
 });
 
+test('player_move with before reorders; team undefined keeps team', () => {
+  let s = initialState();
+  s = play(s,
+    { type: 'player_join', player: 'A', team: 'Red' },
+    { type: 'player_join', player: 'B', team: 'Red' },
+    { type: 'player_join', player: 'C', team: 'Red' });
+  s = reduce(s, { type: 'player_move', player: 'C', before: 'A' });  // pure reorder
+  assert.deepEqual(s.players, ['C', 'A', 'B']);
+  assert.equal(s.teams.C, 'Red');
+  s = reduce(s, { type: 'player_move', player: 'A', team: 'Blue', before: 'C' });
+  assert.deepEqual(s.players, ['A', 'C', 'B']);
+  assert.equal(s.teams.A, 'Blue');
+});
+
+test('configure changes settings live; pad re-derives; log untouched', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 5 },
+    { type: 'verdict', result: 'correct' });          // +15 under old config
+  s = reduce(s, { type: 'configure', patch: { points: { superpower: 20 } } });
+  assert.deepEqual(s.config.pointPad, [15, 10, -5, 20]);
+  assert.equal(scores(s).A, 15);                       // history unchanged
+  s = reduce(s, { type: 'configure', patch: { scoring: false } });
+  assert.equal(s.config.scoring, false);
+  assert.equal(s.config.points.superpower, 20);        // deep merge kept it
+});
+
 test('dead + next cycle', () => {
   let s = start();
   s = play(s, { type: 'dead' }, { type: 'next' });

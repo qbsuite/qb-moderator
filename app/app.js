@@ -1,21 +1,27 @@
-// app.js — qb-moderator solo host console (v0).
+// app.js — qb-moderator host console (v0).
 //
-// One tab, one host. Three reading modes:
+// ONE screen: set/packet picker and settings are collapsible panels that
+// stay available mid-game (settings apply live — scoring/points through
+// the engine's `configure` event, reading mode from the next question).
+// Three reading modes:
 //   audio  — TTS read-aloud (qb-audio); text + answer hidden until the
 //            question ends, so the host can play too.
-//   reveal — word-by-word text reveal (the reader's pacing contract:
+//   reveal — word-by-word text reveal (shared reveal-unit contract:
 //            wpm + slow note-run spans); host can play.
 //   text   — full text + answer visible: the host IS the moderator and
 //            reads from the screen.
 // All game logic lives in engine/engine.js; this file is data loading,
-// audio/reveal clocks, and DOM.
+// audio/reveal clocks, and DOM. Reveal-unit splitting comes from the
+// canonical vendor/reveal_units.js (classic script, also vendored by
+// the library-of-stock reader).
 //
 // Data contracts consumed (SPEC.md): the site's R2 data plane
 // (catalog.json, sets/{slug}.json) and the qb-audio dataset.
 
 import { initialState, reduce, scores, teamScores } from '../engine/engine.js';
-import { questionUnits, slowSpans, SLOW_FACTOR } from './vendor/reveal_units.js';
 import * as audio from './audio.js';
+
+const { questionUnits, slowSpans, SLOW_FACTOR } = globalThis.qbRevealUnits;
 
 const QDATA_BASE = 'https://pub-b5f94e8d4cc648abb0e35b7ca4444c65.r2.dev';
 
@@ -27,7 +33,7 @@ let CAT = null;            // catalog.json
 let SET = null;            // sets/{slug}.json payload
 let packet = null;         // current packet {number, tossups, bonuses}
 let tuIdx = -1;            // index into packet.tossups
-let state = null;          // engine state
+let state = initialState({});  // engine state lives for the whole session
 let cur = null;            // {q, units, powerIdx, superpowerIdx, mode, unitIdx, mapper, slow, timer}
 let pendingBuzz = null;    // {unitIdx, ts} captured at buzz time, player picked after
 let selPlayer = null;
@@ -38,10 +44,10 @@ const player = audio.createPlayer();
 function dispatch(ev) { state = reduce(state, ev); render(); }
 const readingMode = () => document.querySelector('input[name=rmode]:checked').value;
 
-// ---------- setup: catalog + pickers ----------
+// ---------- set & packet picker (always available) ----------
 fetch(QDATA_BASE + '/catalog.json').then(r => r.json()).then(cat => {
   CAT = cat;
-  $('setupstatus').textContent = cat.sets.length + ' sets';
+  $('pickerstatus').textContent = cat.sets.length + ' sets';
   renderSetList('');
   audio.loadAudioIndex().catch(() => {});   // warm; absence just falls back to reveal
 });
@@ -56,28 +62,35 @@ $('setsearch').oninput = e => renderSetList(e.target.value);
 
 $('setpick').onchange = async () => {
   const slug = $('setpick').value;
-  $('setupstatus').textContent = 'Loading set…';
+  $('pickerstatus').textContent = 'Loading set…';
   SET = await fetch(QDATA_BASE + '/sets/' + slug + '.json').then(r => r.json());
   $('packetpick').innerHTML = SET.packets.map((p, i) =>
     `<option value="${i}">Packet ${p.number ?? i + 1}${p.name ? ' — ' + esc(p.name) : ''} (${p.tossups.length} TU)</option>`).join('');
-  $('setupstatus').textContent = SET.name;
-  $('startbtn').disabled = false;
+  $('pickerstatus').textContent = SET.name;
+  $('loadbtn').disabled = false;
 };
 
-$('startbtn').onclick = () => {
+$('loadbtn').onclick = () => {
   packet = SET.packets[+$('packetpick').value];
-  state = initialState({
-    scoring: $('optScoring').checked,
-    points: { superpower: $('optSuper').checked ? 20 : null },
-  });
-  for (const p of $('playersin').value.split(',').map(s => s.trim()).filter(Boolean)) {
-    state = reduce(state, { type: 'player_join', player: p });
-  }
   tuIdx = -1;
-  $('setup').classList.add('hidden');
-  $('game').classList.remove('hidden');
+  $('pickerpanel').open = false;
+  $('pickersummary').textContent = `${SET.name} · packet ${packet.number ?? +$('packetpick').value + 1}`;
   nextQuestion();
 };
+
+// ---------- live settings ----------
+$('optScoring').onchange = () =>
+  dispatch({ type: 'configure', patch: { scoring: $('optScoring').checked } });
+$('optSuper').onchange = () =>
+  dispatch({ type: 'configure', patch: { points: { superpower: $('optSuper').checked ? 20 : null } } });
+$('optBonuses').onchange = render;
+$('optChecker').onchange = render;
+for (const r of document.querySelectorAll('input[name=rmode]')) r.onchange = renderSettingsBrief;
+
+function renderSettingsBrief() {
+  $('settingsbrief').textContent = '— ' + { audio: '♪ audio', reveal: 'reveal', text: 'full text' }[readingMode()]
+    + ($('optScoring').checked ? '' : ', scoreless');
+}
 
 // ---------- question flow ----------
 async function nextQuestion() {
@@ -181,11 +194,11 @@ function applyVerdict(result, points = null) {
   render();
 }
 
-// Player-box point buttons: during reading this IS the buzz (that player,
+// Player-row point buttons: during reading this IS the buzz (that player,
 // current position, those points); with a pending buzz it assigns the
 // player; otherwise it's a direct score adjustment.
 function directPoints(p, v) {
-  if (state.phase === 'reading') {
+  if (cur && state.phase === 'reading') {
     pauseReading();
     pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
     selPlayer = p;
@@ -211,7 +224,7 @@ function suggested() {
 // ---------- controls ----------
 $('buzz').onclick = buzz;
 document.addEventListener('keydown', e => {
-  if (e.code === 'Space' && state && state.phase === 'reading'
+  if (e.code === 'Space' && cur && state.phase === 'reading'
       && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); buzz(); }
 });
 $('playbtn').onclick = () => {
@@ -243,7 +256,7 @@ $('addteambtn').onclick = () => {
 
 // ---------- rendering ----------
 function render() {
-  if (!state) return;
+  renderSettingsBrief();
   renderRoster();
   renderHistory();
   if (!cur) return;
@@ -262,6 +275,8 @@ function render() {
   $('playbtn').classList.toggle('hidden', cur.mode === 'text' || state.phase !== 'reading');
   $('finishedbtn').classList.toggle('hidden', state.phase !== 'reading');
   $('finishedbtn').disabled = !!state.current?.readingFinished;
+  $('deadbtn').classList.toggle('hidden', state.phase === 'done');
+  $('nextbtn').classList.remove('hidden');
 
   const buzzable = state.phase === 'reading';
   $('buzz').classList.toggle('hidden', !buzzable && !pendingBuzz);
@@ -319,9 +334,9 @@ function renderSuggestion() {
 
 function renderBonus() {
   const el = $('bonuspanel');
-  const bonus = packet.bonuses && packet.bonuses[tuIdx];
+  const bonus = packet && packet.bonuses && packet.bonuses[tuIdx];
   const enabled = $('optBonuses').checked;
-  if (!enabled || state.phase !== 'done' || !controlling || !bonus) {
+  if (!enabled || !cur || state.phase !== 'done' || !controlling || !bonus) {
     el.classList.add('hidden');
     if (!enabled) el.dataset.for = '';
     return;
@@ -346,7 +361,7 @@ function renderBonus() {
   }
 }
 
-// ---------- roster: teams, drag, per-player point boxes ----------
+// ---------- roster: teams, drag to move/reorder, per-player point rows ----------
 function rosterColumns() {
   const cols = teamList.map(t => ({ team: t, players: state.players.filter(p => state.teams[p] === t) }));
   const unassigned = state.players.filter(p => !state.teams[p]);
@@ -358,6 +373,7 @@ function renderRoster() {
   const totals = scores(state);
   const tTotals = teamScores(state);
   const lockouts = state.current ? state.current.lockouts : [];
+  const midQuestion = state.phase === 'reading' || state.phase === 'buzzed';
   const pad = state.config.scoring ? [...state.config.pointPad, 0] : [];
   $('teamsrow').innerHTML = rosterColumns().map(col => {
     const head = col.team === null
@@ -368,8 +384,7 @@ function renderRoster() {
         <div class="pname" data-drag="${esc(p)}"><span>${esc(p)}</span><b class="pscore">${totals[p] ?? 0}</b></div>
         <div class="pbtns">${pad.map(v =>
           `<button class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}" data-v="${v}"
-             ${lockouts.includes(p) && state.phase !== 'done' && state.phase !== 'idle' ? 'disabled' : ''}>
-             ${v > 0 ? '+' + v : v}</button>`).join('')}</div>
+             ${lockouts.includes(p) && midQuestion ? 'disabled' : ''}>${v > 0 ? '+' + v : v}</button>`).join('')}</div>
       </div>`).join('');
     return `<div class="teamcol" data-teamcol="${col.team === null ? '' : esc(col.team)}">${head}${boxes}</div>`;
   }).join('');
@@ -381,7 +396,7 @@ function renderRoster() {
       if (!to || to === from || teamList.includes(to)) return;
       teamList[teamList.indexOf(from)] = to;
       for (const p of state.players) {
-        if (state.teams[p] === from) dispatch({ type: 'player_move', player: p, team: to });
+        if (state.teams[p] === from) state = reduce(state, { type: 'player_move', player: p, team: to });
       }
       render();
     };
@@ -395,35 +410,43 @@ function renderRoster() {
   }
 }
 
-// Pointer-based drag (HTML5 DnD is unreliable on mobile): track the
-// pointer, highlight the team column under it, move on release.
+// Pointer-based drag (HTML5 DnD is unreliable on mobile). Drop on a
+// player row -> insert before that player (reorder, adopting that row's
+// team); drop on a team column -> append to that team.
 function startDrag(e, p, box) {
   if (e.button) return;
   e.preventDefault();
   box.classList.add('dragging');
   const cols = [...$('teamsrow').querySelectorAll('.teamcol')];
-  const colAt = (x, y) => {
+  const boxes = [...$('teamsrow').querySelectorAll('.pbox')];
+  const under = (x, y) => {
     const el = document.elementFromPoint(x, y);
-    return el ? el.closest('.teamcol') : null;
+    return {
+      box: el ? el.closest('.pbox') : null,
+      col: el ? el.closest('.teamcol') : null,
+    };
   };
   const move = ev => {
-    const over = colAt(ev.clientX, ev.clientY);
-    for (const c of cols) c.classList.toggle('dragover', c === over);
+    const o = under(ev.clientX, ev.clientY);
+    for (const c of cols) c.classList.toggle('dragover', c === o.col && (!o.box || o.box === box));
+    for (const b of boxes) b.classList.toggle('droptarget', b === o.box && b !== box);
   };
   const up = ev => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
     box.classList.remove('dragging');
-    const over = colAt(ev.clientX, ev.clientY);
     for (const c of cols) c.classList.remove('dragover');
-    if (over) {
-      const team = over.dataset.teamcol || null;
+    for (const b of boxes) b.classList.remove('droptarget');
+    const o = under(ev.clientX, ev.clientY);
+    if (o.box && o.box !== box) {
+      const before = o.box.dataset.p;
+      dispatch({ type: 'player_move', player: p, team: state.teams[before] ?? null, before });
+    } else if (o.col) {
+      const team = o.col.dataset.teamcol || null;
       if (team !== (state.teams[p] ?? null)) {
         dispatch({ type: 'player_move', player: p, team });
-        return;
-      }
-    }
-    render();
+      } else render();
+    } else render();
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
@@ -441,14 +464,12 @@ function renderPacketDone() {
   cur = null;
   $('qlabel').textContent = 'Packet finished';
   $('qmeta').textContent = '';
-  $('qtext').innerHTML = '<i>Final scores below. Reload to pick another packet.</i>';
+  $('qtext').innerHTML = '<i>Final scores below — pick another packet above to keep going (scores carry over).</i>';
   $('anspanel').classList.add('hidden');
   $('progress').classList.add('hidden');
-  $('playbtn').classList.add('hidden');
-  $('finishedbtn').classList.add('hidden');
-  $('buzz').classList.add('hidden');
-  $('adjudicate').classList.add('hidden');
-  $('bonuspanel').classList.add('hidden');
-  $('nextbtn').disabled = true;
+  for (const id of ['playbtn', 'finishedbtn', 'deadbtn', 'nextbtn', 'buzz', 'adjudicate', 'bonuspanel']) {
+    $(id).classList.add('hidden');
+  }
+  $('pickerpanel').open = true;
   renderRoster(); renderHistory();
 }

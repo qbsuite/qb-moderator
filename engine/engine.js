@@ -109,8 +109,30 @@ export function reduce(state, event) {
     return { ...state, teams, players: state.players.filter(p => p !== event.player) };
   }
   if (type === 'player_move') {
+    // Moves between teams AND/OR reorders: the player is re-inserted
+    // before event.before (or at the end). team undefined = keep team
+    // (pure reorder); team null = unassign.
     if (!state.players.includes(event.player)) return state;
-    return { ...state, teams: { ...state.teams, [event.player]: event.team ?? null } };
+    const players = state.players.filter(p => p !== event.player);
+    const at = event.before && players.includes(event.before)
+      ? players.indexOf(event.before) : players.length;
+    players.splice(at, 0, event.player);
+    const team = event.team === undefined
+      ? (state.teams[event.player] ?? null) : (event.team ?? null);
+    return { ...state, players, teams: { ...state.teams, [event.player]: team } };
+  }
+
+  if (type === 'configure') {
+    // Live settings change (scoring on/off, point values, humanJudge).
+    // The point pad re-derives from the new values unless the patch
+    // pins its own. Applies to future verdicts; the log is untouched.
+    const merged = {
+      ...state.config,
+      ...event.patch,
+      points: { ...state.config.points, ...(event.patch.points || {}) },
+    };
+    if (!event.patch.pointPad) delete merged.pointPad;
+    return { ...state, config: defaultConfig(merged) };
   }
 
   if (type === 'question_start') {

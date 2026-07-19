@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeMapper } from '../app/audio.js';
-import { questionUnits } from '../app/vendor/reveal_units.js';
+import '../app/vendor/reveal_units.js';   // classic script: attaches the global
+const { questionUnits } = globalThis.qbRevealUnits;
 
 // 3 chunks: 4 + 6 + 2 = 12 words; spans with a 0.5 s silence gap
 // between chunk 1 and 2.

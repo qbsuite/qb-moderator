@@ -21,6 +21,12 @@
   h1 { font-size: 20px; margin: 8px 0 12px; }
   .panel { background: var(--panel); border: 1px solid var(--border);
            border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  details.panel { padding: 0; }
+  details.panel > summary { padding: 12px 14px; cursor: pointer; font-weight: 600;
+    list-style: none; }
+  details.panel > summary::before { content: '▸ '; color: var(--dim); }
+  details.panel[open] > summary::before { content: '▾ '; }
+  details.panel > .body { padding: 0 14px 14px; }
   label { display: block; color: var(--dim); font-size: 13px; margin: 10px 0 4px; }
   select, input[type=text], input[type=number] { padding: 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--panel2); color: var(--text);
@@ -42,7 +48,7 @@
           border-radius: 14px; }
   #buzz.armed { background: var(--good); border-color: var(--good); }
   .pad button { min-width: 64px; font-size: 20px; font-weight: 700; padding: 14px 10px; }
-  .pad .pos, .pos { color: var(--good); } .pad .neg, .neg { color: var(--bad); }
+  .pos { color: var(--good); } .neg { color: var(--bad); }
   #qtext { font-size: 17px; min-height: 40px; }
   #qtext .mark { color: var(--power); font-weight: 700; }
   #qtext .unread { visibility: hidden; }
@@ -58,111 +64,115 @@
 
   /* roster */
   #teamsrow { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-  .teamcol { flex: 1 1 160px; min-width: 150px; background: var(--panel2);
+  .teamcol { flex: 1 1 200px; min-width: 190px; background: var(--panel2);
              border: 1px dashed var(--border); border-radius: 10px; padding: 8px; }
   .teamcol.dragover { border-color: var(--accent); }
   .teamhead { display: flex; justify-content: space-between; font-weight: 700;
               padding: 2px 4px 8px; cursor: pointer; }
-  .pbox { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-          padding: 6px 8px; margin-bottom: 6px; }
+  .pbox { display: flex; align-items: center; gap: 6px;
+          background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 4px 6px; margin-bottom: 6px; }
   .pbox.locked { opacity: .5; }
   .pbox.dragging { opacity: .4; }
-  .pname { display: flex; justify-content: space-between; align-items: center;
-           font-weight: 600; cursor: grab; touch-action: none; padding-bottom: 4px; }
-  .pname .pscore { font-size: 18px; }
-  .pbtns { display: flex; gap: 4px; }
-  .pbtns button { flex: 1; padding: 8px 2px; font-size: 14px; font-weight: 700; }
+  .pbox.droptarget { border-color: var(--accent); }
+  .pname { flex: 1; display: flex; justify-content: space-between; align-items: center;
+           gap: 6px; font-weight: 600; cursor: grab; touch-action: none; min-width: 0; }
+  .pname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pname .pscore { font-size: 17px; }
+  .pbtns { display: flex; gap: 3px; }
+  .pbtns button { padding: 7px 6px; font-size: 13px; font-weight: 700; min-width: 40px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>qb-moderator <span class="muted">solo host · v0</span></h1>
+  <h1>qb-moderator</h1>
 
-  <!-- SETUP -->
-  <div id="setup" class="panel">
-    <label>Set</label>
-    <input type="text" id="setsearch" placeholder="Search sets… (e.g. 2024 ACF Regionals)" autocomplete="off">
-    <select id="setpick" size="6"></select>
-    <label>Packet</label>
-    <select id="packetpick"></select>
-
-    <label>Reading</label>
-    <div class="toggle"><input type="radio" name="rmode" value="audio" id="rmAudio" checked>
-      <label for="rmAudio" style="margin:0;color:var(--text)">TTS audio — text &amp; answer hidden until the end (host can play)</label></div>
-    <div class="toggle"><input type="radio" name="rmode" value="reveal" id="rmReveal">
-      <label for="rmReveal" style="margin:0;color:var(--text)">Word-by-word reveal (host can play) — <span class="row" style="display:inline-flex"><input type="number" id="wpm" value="250" min="80" max="800"> wpm</span></label></div>
-    <div class="toggle"><input type="radio" name="rmode" value="text" id="rmText">
-      <label for="rmText" style="margin:0;color:var(--text)">Show full text — I’m the moderator, I read it aloud myself</label></div>
-
-    <div style="margin-top:10px">
-      <div class="toggle"><input type="checkbox" id="optScoring" checked> Keep score</div>
-      <div class="toggle"><input type="checkbox" id="optSuper"> Superpowers (+20)</div>
-      <div class="toggle"><input type="checkbox" id="optBonuses" checked> Bonuses</div>
-      <div class="toggle"><input type="checkbox" id="optChecker" checked> Suggest verdicts (type the given answer)</div>
+  <details class="panel" id="pickerpanel" open>
+    <summary id="pickersummary">Set &amp; packet</summary>
+    <div class="body">
+      <input type="text" id="setsearch" placeholder="Search sets… (e.g. 2024 ACF Regionals)" autocomplete="off">
+      <select id="setpick" size="6" style="margin-top:8px"></select>
+      <div class="row" style="margin-top:8px">
+        <select id="packetpick" style="flex:1"></select>
+        <button class="primary" id="loadbtn" disabled>Read this packet</button>
+      </div>
+      <div class="muted" id="pickerstatus">Loading catalog…</div>
     </div>
-    <label>Players (comma-separated — you can also add/drag at the bottom later)</label>
-    <input type="text" id="playersin" placeholder="Alice, Bob, Carol">
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="startbtn" disabled>Start</button>
-      <span class="muted" id="setupstatus">Loading catalog…</span>
+  </details>
+
+  <details class="panel" id="settingspanel">
+    <summary>Settings <span class="muted" id="settingsbrief"></span></summary>
+    <div class="body">
+      <label>Reading (applies from the next question)</label>
+      <div class="toggle"><input type="radio" name="rmode" value="audio" id="rmAudio" checked>
+        <label for="rmAudio" style="margin:0;color:var(--text)">TTS audio — text &amp; answer hidden until the end (host can play)</label></div>
+      <div class="toggle"><input type="radio" name="rmode" value="reveal" id="rmReveal">
+        <label for="rmReveal" style="margin:0;color:var(--text)">Word-by-word reveal (host can play)</label>
+        <input type="number" id="wpm" value="250" min="80" max="800"> <span class="muted">wpm</span></div>
+      <div class="toggle"><input type="radio" name="rmode" value="text" id="rmText">
+        <label for="rmText" style="margin:0;color:var(--text)">Show full text — I’m the moderator, I read it aloud myself</label></div>
+      <div style="margin-top:8px">
+        <div class="toggle"><input type="checkbox" id="optScoring" checked> Keep score</div>
+        <div class="toggle"><input type="checkbox" id="optSuper"> Superpowers (+20)</div>
+        <div class="toggle"><input type="checkbox" id="optBonuses" checked> Bonuses</div>
+        <div class="toggle"><input type="checkbox" id="optChecker" checked> Suggest verdicts (type the given answer)</div>
+      </div>
+    </div>
+  </details>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between">
+      <div><b id="qlabel">No packet loaded</b> <span class="muted" id="qmeta"></span></div>
+      <div class="row">
+        <button id="playbtn" class="hidden">▶︎ / ⏸</button>
+        <button id="finishedbtn" class="hidden" title="Mark reading finished (negs close)">Finished</button>
+        <button id="deadbtn" class="hidden">Dead</button>
+        <button id="nextbtn" class="hidden">Next ▸</button>
+      </div>
+    </div>
+    <div id="progress" class="hidden"><div id="progressfill"></div></div>
+    <div id="qtext"><i class="muted">Pick a set and packet above to start reading.</i></div>
+    <div class="ans hidden" id="anspanel"></div>
+  </div>
+
+  <div class="panel">
+    <button id="buzz" class="hidden">BUZZ&nbsp;<span class="muted" style="font-weight:400">(space)</span></button>
+    <div id="adjudicate" class="hidden">
+      <label>Who buzzed? (or tap a point button on their row below)</label>
+      <div class="row" id="playerchips"></div>
+      <div id="checkerrow" class="row" style="margin-top:8px">
+        <input type="text" id="givenanswer" placeholder="What did they say? (optional — checker suggests)" style="flex:1">
+      </div>
+      <div class="muted" id="suggestion"></div>
+      <div class="row pad" style="margin-top:10px" id="padrow">
+        <button id="vcorrect" class="pos">✓ Correct</button>
+        <button id="vwrong" class="neg">✗ Wrong</button>
+      </div>
     </div>
   </div>
 
-  <!-- GAME -->
-  <div id="game" class="hidden">
-    <div class="panel">
-      <div class="row" style="justify-content:space-between">
-        <div><b id="qlabel"></b> <span class="muted" id="qmeta"></span></div>
-        <div class="row">
-          <button id="playbtn">▶︎ / ⏸</button>
-          <button id="finishedbtn" title="Mark reading finished (negs close)">Finished</button>
-          <button id="deadbtn">Dead</button>
-          <button id="nextbtn">Next ▸</button>
-        </div>
-      </div>
-      <div id="progress"><div id="progressfill"></div></div>
-      <div id="qtext"></div>
-      <div class="ans" id="anspanel"></div>
-    </div>
+  <div class="panel hidden" id="bonuspanel"></div>
 
-    <div class="panel">
-      <button id="buzz">BUZZ&nbsp;<span class="muted" style="font-weight:400">(space)</span></button>
-      <div id="adjudicate" class="hidden">
-        <label>Who buzzed? (or tap a point button on their box below)</label>
-        <div class="row" id="playerchips"></div>
-        <div id="checkerrow" class="row" style="margin-top:8px">
-          <input type="text" id="givenanswer" placeholder="What did they say? (optional — checker suggests)" style="flex:1">
-        </div>
-        <div class="muted" id="suggestion"></div>
-        <div class="row pad" style="margin-top:10px" id="padrow">
-          <button id="vcorrect" class="pos">✓ Correct</button>
-          <button id="vwrong" class="neg">✗ Wrong</button>
-        </div>
-      </div>
+  <!-- roster: teams + players, drag to move/reorder, tap points to score -->
+  <div class="panel">
+    <div id="teamsrow"></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="newplayer" placeholder="New player" style="flex:1;min-width:120px">
+      <button id="addplayerbtn">+ Player</button>
+      <button id="addteambtn">+ Team</button>
     </div>
+    <div class="muted">Drag a player’s name onto a team, or onto another player to
+      reorder. Point buttons: during reading they record that player’s buzz with
+      those points; otherwise they adjust the score. Tap a team name to rename.</div>
+  </div>
 
-    <div class="panel" id="bonuspanel"></div>
-
-    <!-- roster: teams + players, drag to move, tap points to score -->
-    <div class="panel">
-      <div id="teamsrow"></div>
-      <div class="row" style="margin-top:10px">
-        <input type="text" id="newplayer" placeholder="New player" style="flex:1;min-width:120px">
-        <button id="addplayerbtn">+ Player</button>
-        <button id="addteambtn">+ Team</button>
-      </div>
-      <div class="muted">Drag a player’s name between team boxes. Point buttons: during
-        reading they record that player’s buzz with those points; otherwise they’re a
-        direct score adjustment. Tap a team name to rename.</div>
-    </div>
-
-    <div class="panel">
-      <b>History</b>
-      <ul class="hist" id="history"></ul>
-    </div>
+  <div class="panel">
+    <b>History</b>
+    <ul class="hist" id="history"></ul>
   </div>
 </div>
 <script src="vendor/answer_checker.js"></script>
+<script src="vendor/reveal_units.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
