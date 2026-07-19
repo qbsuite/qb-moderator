@@ -37,10 +37,21 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
     if (request.method === 'POST' && url.pathname === '/rooms') {
-      let code = '';
-      const bytes = crypto.getRandomValues(new Uint8Array(4));
-      for (const b of bytes) code += CODE_ALPHABET[b % CODE_ALPHABET.length];
-      return Response.json({ code }, { headers: CORS });
+      // Claim a FRESH room: the code is the DO name, so an unclaimed
+      // code could collide with a live room or inherit a dead room's
+      // stale state. The DO's /claim rejects codes that are active or
+      // not yet expired; retry until one sticks. 31^4 ≈ 923k codes and
+      // rooms expire (see RoomDO TTL), so exhaustion isn't a concern —
+      // collisions are just re-rolled.
+      for (let i = 0; i < 8; i++) {
+        let code = '';
+        const bytes = crypto.getRandomValues(new Uint8Array(4));
+        for (const b of bytes) code += CODE_ALPHABET[b % CODE_ALPHABET.length];
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+        const r = await stub.fetch('https://do/claim', { method: 'POST' });
+        if (r.ok) return Response.json({ code }, { headers: CORS });
+      }
+      return new Response('no free room codes, try again', { status: 503, headers: CORS });
     }
 
     const m = url.pathname.match(/^\/rooms\/([A-Z2-9]{4})\/ws$/);
@@ -53,17 +64,48 @@ export default {
   },
 };
 
+// Rooms self-destruct after this long without any activity (message or
+// connection): the alarm wipes storage and closes sockets, so the code
+// returns to the pool with no stale state.
+const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
+
 export class RoomDO {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
   }
 
+  /** Any activity pushes the self-destruct alarm back by the TTL. */
+  touch() {
+    return this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+  }
+
+  async alarm() {
+    for (const ws of this.ctx.getWebSockets()) {
+      try { ws.close(1000, 'room expired'); } catch (e) { /* closing */ }
+    }
+    await this.ctx.storage.deleteAll();
+  }
+
   async fetch(request) {
+    const url = new URL(request.url);
+
+    if (request.method === 'POST' && url.pathname === '/claim') {
+      const created = await this.ctx.storage.get('createdAt');
+      const active = this.ctx.getWebSockets().length > 0;
+      if (created && (active || Date.now() - created < ROOM_TTL_MS)) {
+        return new Response('room code in use', { status: 409 });
+      }
+      await this.ctx.storage.deleteAll();   // expired leftover state, if any
+      await this.ctx.storage.put('createdAt', Date.now());
+      await this.touch();
+      return new Response('claimed');
+    }
+
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket', { status: 426 });
     }
-    const url = new URL(request.url);
+    await this.touch();
     const name = (url.searchParams.get('name') || 'guest').slice(0, 40);
     const role = url.searchParams.get('role') === 'host' ? 'host' : 'player';
 
@@ -104,6 +146,7 @@ export class RoomDO {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
     const att = ws.deserializeAttachment() || {};
+    await this.touch();
 
     if (att.role === 'player') {
       if (msg.t !== 'buzz') return;
