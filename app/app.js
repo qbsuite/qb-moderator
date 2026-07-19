@@ -43,6 +43,8 @@ const player = audio.createPlayer();
 
 let room = null;           // connected room (room.js) or null
 let roomArmed = null;      // last arm/disarm sent, to avoid spam
+const connected = new Set();  // player names currently connected via the room
+const qlog = [];           // completed questions [{label, question, answer, summary}]
 
 function dispatch(ev) { state = reduce(state, ev); render(); }
 
@@ -61,11 +63,17 @@ $('roombtn').onclick = async () => {
     room = connectHost(code, {
       onBuzz: handleRemoteBuzz,
       onJoin: name => {
+        connected.add(name);
         if (name && !state.players.includes(name)) {
           dispatch({ type: 'player_join', player: name, team: null });
         } else render();
       },
-      onOpen: () => { roomArmed = null; render(); },   // resync after (re)connect
+      onLeave: name => { connected.delete(name); render(); },
+      onOpen: () => {   // resync after (re)connect
+        roomArmed = null;
+        room.send({ t: 'qlog', qlog });
+        render();
+      },
     });
     $('roombtn').textContent = '🌐 ' + code;
     $('roombtn').title = 'Click to copy the player join link';
@@ -168,8 +176,26 @@ $('optBonuses').onchange = render;
 $('optChecker').onchange = render;
 
 // ---------- question flow ----------
+// Record a finished question into the players' browsable log.
+function logQuestion() {
+  if (!cur) return;
+  const qid = cur.q._id;
+  const events = state.log.filter(e => e.qid === qid);
+  const summary = events.map(e =>
+    e.kind === 'dead' ? 'dead'
+    : `${e.player} ${e.points > 0 ? '+' : ''}${e.points}`).join(' · ') || 'skipped';
+  qlog.push({
+    label: qidMeta[qid]?.label || '',
+    question: cur.q.question_sanitized || cur.q.question || '',
+    answer: cur.q.answer || '',
+    summary,
+  });
+  if (room) room.send({ t: 'qlog', qlog });
+}
+
 async function nextQuestion() {
   stopClocks();
+  logQuestion();
   pendingBuzz = null; selPlayer = null; controlling = null;
   tuIdx++;
   if (tuIdx >= packet.tossups.length) { renderPacketDone(); return; }
@@ -486,15 +512,20 @@ function renderScoring() {
   const midQuestion = state.phase === 'reading' || state.phase === 'buzzed' || !!pendingBuzz;
   const pad = state.config.scoring ? [...state.config.pointPad, 0] : [];
   const cols = rosterColumns();
-  $('scoring').innerHTML = cols.map(col => {
+  const bar = `<div class="scorebar"><span class="grow"></span>
+    <button id="addplayerq" title="Add a player">+ player</button>
+    <button id="addteamq" title="Add a team">+ team</button></div>`;
+  $('scoring').innerHTML = bar + cols.map(col => {
     const head = col.team === null
       ? `<div class="teamhead"><span class="tname unassigned">Players</span>${teamList.length ? '' : ''}</div>`
       : `<div class="teamhead"><span class="tname" data-team="${esc(col.team)}">${esc(col.team)}</span><span class="tscore">${tTotals[col.team] ?? 0}</span></div>`;
     const rows = col.players.map(p => {
       const locked = lockouts.includes(p);
+      const offline = room && !connected.has(p);
       return `<div class="prow ${locked ? 'locked' : ''} ${p === selPlayer ? 'droptarget' : ''}" data-p="${esc(p)}">
         <span class="handle">≡</span>
-        <span class="pname" data-p="${esc(p)}">${esc(p)}</span>
+        <span class="pname" data-p="${esc(p)}">${esc(p)}${offline
+          ? ' <span class="faint" title="not connected to the room">○</span>' : ''}</span>
         <span class="pscore">${totals[p] ?? 0}</span>
         <span class="pbtns">${pad.map(v =>
           `<button class="${v > 0 ? 'good' : v < 0 ? 'bad' : ''}" data-v="${v}"
@@ -502,7 +533,19 @@ function renderScoring() {
       </div>`;
     }).join('');
     return `<div class="team" data-teamcol="${col.team === null ? '' : esc(col.team)}">${head}${rows}</div>`;
-  }).join('') || '<div class="muted" style="padding:0.4rem 0">No players yet — add them with 👥 Players.</div>';
+  }).join('');
+
+  $('addteamq').onclick = () => {
+    let n = teamList.length + 1;
+    while (teamList.includes('Team ' + n)) n++;
+    teamList.push('Team ' + n);
+    render();
+  };
+  $('addplayerq').onclick = () => {
+    const name = (prompt('Player name') || '').trim();
+    if (!name || state.players.includes(name)) return;
+    dispatch({ type: 'player_join', player: name, team: teamList[0] ?? null });
+  };
 
   for (const t of $('scoring').querySelectorAll('.tname[data-team]')) {
     t.onclick = () => {

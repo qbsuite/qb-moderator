@@ -73,12 +73,18 @@ p2.sendJson({ t: 'buzz' });
 const b2 = await host.next(m => m.t === 'buzz' && m.name === 'Sam', 'Sam buzz');
 ok('re-arm cycle');
 
-// late joiner gets the stored snapshot + roster
+// question log relay
+host.sendJson({ t: 'qlog', qlog: [{ label: 'TU 1', question: 'Who?', answer: 'X', summary: 'Kim +10' }] });
+await p2.next(m => m.t === 'qlog' && m.qlog.length === 1, 'p2 gets qlog');
+ok('qlog relay');
+
+// late joiner gets the stored snapshot + roster + qlog
 const late = await connect(code, 'Late', 'player');
 const wl = await late.next(m => m.t === 'welcome', 'late welcome');
 if (wl.snapshot?.label !== 'TU 1') fail('late joiner missing snapshot');
 if (!wl.roster.some(r => r.name === 'Host' && r.role === 'host')) fail('roster missing host');
-ok('late-join snapshot + roster');
+if (!(wl.qlog && wl.qlog.length === 1 && wl.qlog[0].label === 'TU 1')) fail('late joiner missing qlog');
+ok('late-join snapshot + roster + qlog');
 
 // leave fan-out
 p1.close();

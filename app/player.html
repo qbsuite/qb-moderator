@@ -45,7 +45,21 @@
   #bigbuzz.locked { background: var(--input); color: var(--faint);
     text-decoration: line-through; }
 
-  #board { padding: 0 1.2rem 1.4rem; }
+  #board { padding: 0 1.2rem 0.6rem; }
+  #pastq { padding: 0 1.2rem 1.6rem; }
+  #pastq h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--faint); margin: 0.8rem 0 0.3rem; font-weight: 600; }
+  #pastq details { border-top: 1px solid var(--border); padding: 0.35rem 0; }
+  #pastq summary { cursor: pointer; list-style: none; display: flex; gap: 0.6rem;
+    align-items: baseline; }
+  #pastq summary::before { content: '▸'; color: var(--faint); }
+  #pastq details[open] summary::before { content: '▾'; }
+  #pastq summary b { color: var(--bright); font-weight: 650; white-space: nowrap; }
+  #pastq summary .sum { color: var(--muted); font-size: 0.88rem; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  #pastq .qbody { font-size: 0.98rem; line-height: 1.65; padding: 0.4rem 0 0.3rem; }
+  #pastq .qans { color: var(--muted); padding-bottom: 0.2rem; }
+  #pastq .qans u, #pastq .qans b { color: var(--bright); }
   .bteam { margin-top: 0.7rem; }
   .bteam .bhead { display: flex; justify-content: space-between; font-weight: 700;
     color: var(--bright); border-bottom: 1px solid var(--border); padding-bottom: 0.15rem; }
@@ -72,6 +86,7 @@
     </div>
     <button id="bigbuzz" class="waiting">…</button>
     <div id="board"></div>
+    <div id="pastq"></div>
   </div>
 
 <script>
@@ -86,7 +101,7 @@ if (params.get('code')) $('code').value = params.get('code');
 if (localStorage.qbmodName) $('name').value = localStorage.qbmodName;
 
 let ws = null, me = '', code = '', armed = false, mineBuzz = false, closed = false;
-let snapshot = null;
+let snapshot = null, qlog = [];
 
 $('joinbtn').onclick = join;
 $('code').oninput = () => { $('code').value = $('code').value.toUpperCase(); };
@@ -113,7 +128,8 @@ function connect() {
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (err) { return; }
-    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; mineBuzz = false; renderAll(); }
+    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; renderAll(); renderPast(); }
+    else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
     else if (m.t === 'arm') { armed = true; mineBuzz = false; vibrate(40); renderBuzz(); }
     else if (m.t === 'disarm') { armed = false; renderBuzz(); }
     else if (m.t === 'buzz') {
@@ -171,6 +187,17 @@ function renderAll() {
         <div class="brow ${p.name === me ? 'me' : ''} ${p.locked ? 'locked' : ''}">
           <span>${esc(p.name)}</span><span>${p.score}</span></div>`).join('')}
     </div>` : '');
+}
+
+function renderPast() {
+  const el = $('pastq');
+  if (!qlog.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<h2>Past questions</h2>' + qlog.slice().reverse().map(q => `
+    <details>
+      <summary><b>${esc(q.label)}</b><span class="sum">${esc(q.summary)}</span></summary>
+      <div class="qbody">${esc(q.question)}</div>
+      <div class="qans">${q.answer}</div>
+    </details>`).join('');
 }
 })();
 </script>

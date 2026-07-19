@@ -72,13 +72,14 @@ export class RoomDO {
     this.ctx.acceptWebSocket(server, [role]);
     server.serializeAttachment({ name, role });
 
-    const [snapshot, armed] = await Promise.all([
+    const [snapshot, armed, qlog] = await Promise.all([
       this.ctx.storage.get('snapshot'),
       this.ctx.storage.get('armed'),
+      this.ctx.storage.get('qlog'),
     ]);
     server.send(JSON.stringify({
       t: 'welcome', snapshot: snapshot ?? null, armed: !!armed,
-      roster: this.roster(),
+      qlog: qlog ?? [], roster: this.roster(),
     }));
     this.broadcast({ t: 'join', name, role }, server);
     return new Response(null, { status: 101, webSocket: client });
@@ -125,6 +126,11 @@ export class RoomDO {
     } else if (msg.t === 'disarm') {
       await this.ctx.storage.put('armed', false);
       this.broadcast({ t: 'disarm' }, ws);
+    } else if (msg.t === 'qlog') {
+      // Completed-question log (text + answer + result) so players can
+      // browse what was read; stored for late joiners.
+      await this.ctx.storage.put('qlog', msg.qlog ?? []);
+      this.broadcast({ t: 'qlog', qlog: msg.qlog ?? [] }, ws);
     }
   }
 
