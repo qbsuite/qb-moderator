@@ -146,5 +146,17 @@ for late joiners.
 - Live protocol test: `node tests/rooms.e2e.mjs` (not in CI — hits the
   deployed instance).
 
+**Second consumer — consensus-scorekeeper** (July 2026,
+github.com/consensus-scorekeeper): the Consensus trivia scorekeeper runs
+its phone-buzzer rooms against the same default instance and vendors
+`app/room.js` byte-identical (`src/vendor/room.js` there, with a drift
+test against this checkout). The wire protocol above and `app/room.js`'s
+exported API (`DEFAULT_SERVER`, `createRoom`, `connectHost`, the handle's
+`playerUrl`/`send`/`close`) are therefore **frozen** — changes must be
+backward-compatible and land here first. Note the DO never inspects
+`snapshot` or `qlog` payloads: each consumer defines its own shapes
+(qb-moderator's are described above; consensus renders its scoreboard
+snapshot), so the shared instance serves both without coordination.
+
 Server-authoritative grading + remote text reveal (the full rooms.md
 design) remain the v2 path if online play beyond one room ever matters.

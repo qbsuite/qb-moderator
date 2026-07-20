@@ -35,10 +35,12 @@
     border-bottom: 1px solid var(--border); }
   #topline b { color: var(--bright); letter-spacing: 0.15em; }
   #conn { margin-left: auto; }
+  #buzzmode { background: var(--input); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 0.78rem; padding: 0.1rem 0.5rem; cursor: pointer; }
 
   #bigbuzz { flex: 1; margin: 1rem; border: none; border-radius: 22px;
     font-size: 2.2rem; font-weight: 800; color: #06120b; background: var(--good);
-    cursor: pointer; touch-action: manipulation; transition: background 0.1s; }
+    cursor: pointer; touch-action: none; transition: background 0.1s; }
   #bigbuzz.waiting { background: var(--input); color: var(--faint); }
   #bigbuzz.mine { background: var(--bad); color: #fff; }
   #bigbuzz.other { background: var(--raised); color: var(--muted); }
@@ -82,6 +84,7 @@
     <div id="topline">
       <b id="roomcode"></b>
       <span class="muted" id="qlabel"></span>
+      <button id="buzzmode" title="When your buzz fires: the instant you touch the button, or when you let go"></button>
       <span class="muted" id="conn">●</span>
     </div>
     <button id="bigbuzz" class="waiting">…</button>
@@ -125,6 +128,7 @@ function connect() {
     $('roomcode').textContent = code;
     $('conn').textContent = '●';
     $('conn').className = 'good';
+    keepAwake();
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (err) { return; }
@@ -149,15 +153,43 @@ function connect() {
 
 function vibrate(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
 
+// A sleeping phone can't buzz: hold a screen wake lock while in a room,
+// re-acquiring on tab return (the OS releases it on hide).
+async function keepAwake() {
+  try { await navigator.wakeLock.request('screen'); } catch (e) { /* unsupported/denied */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && ws) keepAwake();
+});
+
 function amLocked() {
   const p = snapshot && snapshot.players && snapshot.players.find(x => x.name === me);
   return !!(p && p.locked);
 }
 
-$('bigbuzz').onclick = () => {
+// Buzz timing is a per-player toggle: "press" fires on pointerdown (the
+// instant of finger contact — no tap-recognition delay, no press-duration
+// variance in the race; the latency-optimal default) while "release"
+// fires on pointerup for players who prefer committing on let-go.
+// touch-action:none on the button keeps a touch there from ever being
+// read as a scroll in either mode.
+let buzzMode = localStorage.qbmodBuzzMode === 'release' ? 'release' : 'press';
+function renderMode() {
+  $('buzzmode').textContent = buzzMode === 'press' ? 'buzz: press ↓' : 'buzz: release ↑';
+}
+$('buzzmode').onclick = () => {
+  buzzMode = buzzMode === 'press' ? 'release' : 'press';
+  localStorage.qbmodBuzzMode = buzzMode;
+  renderMode();
+};
+renderMode();
+
+function sendBuzz() {
   if (!armed || amLocked() || !ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ t: 'buzz' }));
-};
+}
+$('bigbuzz').onpointerdown = () => { if (buzzMode === 'press') sendBuzz(); };
+$('bigbuzz').onpointerup = () => { if (buzzMode === 'release') sendBuzz(); };
 
 function renderBuzz(buzzer) {
   const b = $('bigbuzz');

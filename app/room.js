@@ -1,5 +1,9 @@
 // room.js — host-side client for the room server (rooms/worker.js).
 //
+// CANONICAL COPY — vendored byte-identical by consensus-scorekeeper
+// (src/vendor/room.js there). Keep the exported API stable; protocol
+// changes must be backward-compatible (see SPEC.md, room protocol).
+//
 // The host app stays the engine authority; this module just carries the
 // relay protocol: create a room, hold the host WebSocket (with
 // auto-reconnect), send state/arm/disarm, surface player joins and
