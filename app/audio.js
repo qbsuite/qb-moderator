@@ -1,7 +1,7 @@
 // audio.js — qb-audio dataset client for the moderator.
 //
 // Consumes the qb-audio data contract (see SPEC.md "Data contracts"):
-// audio_index.json manifest, tossups/{qid[:2]}/{qid}.opus, and the
+// audio_index.json manifest, tossups/{qid[-2:]}/{qid}.opus, and the
 // {qid}.json chunk-offset sidecars. This is the REFERENCE sidecar
 // implementation — the site reader still uses the proportional
 // approximation and should adopt sidecarMapper once this settles.
@@ -24,11 +24,15 @@ export function loadAudioIndex() {
 
 export function hasAudio(qid) { return !!(HAVE && HAVE.has(qid)); }
 export function indexLoaded() { return !!HAVE; }
+// Shard = LAST two hex chars of the qid (the ObjectId counter, uniform
+// across 256 buckets). The timestamp *prefix* is "62" for every qbreader
+// id, which funneled all files into one folder and hit HF's 10k-files-
+// per-directory limit — the dataset re-sharded to qid[-2:] July 19, 2026.
 export function audioUrl(qid) {
-  return AUDIO_BASE + '/tossups/' + qid.slice(0, 2) + '/' + qid + '.opus';
+  return AUDIO_BASE + '/tossups/' + qid.slice(-2) + '/' + qid + '.opus';
 }
 export function sidecarUrl(qid) {
-  return AUDIO_BASE + '/tossups/' + qid.slice(0, 2) + '/' + qid + '.json';
+  return AUDIO_BASE + '/tossups/' + qid.slice(-2) + '/' + qid + '.json';
 }
 
 /**

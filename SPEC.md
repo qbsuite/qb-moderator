@@ -109,7 +109,7 @@ unit indexes; files without sidecars fall back to proportional
   `sets/{slug}.json` (`{packets: [{number, name, tossups, bonuses}]}`,
   API-shaped docs).
 - **Audio**: the qb-audio dataset — `audio_index.json` manifest,
-  `tossups/{qid[:2]}/{qid}.opus`, `{qid}.json` sidecars.
+  `tossups/{qid[-2:]}/{qid}.opus`, `{qid}.json` sidecars.
 - **Answer checking**: qbreader's qb-answer-checker, vendored
   (`app/vendor/answer_checker.js`, ISC, unmodified from the site's vendor
   copy) — verdicts are suggestions for the host.
