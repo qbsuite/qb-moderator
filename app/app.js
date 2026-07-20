@@ -157,26 +157,59 @@ $('gearbtn').onclick = () => $('settingsheet').classList.add('open');
 $('rosterbtn').onclick = () => { buildRosterEditor(); $('rostersheet').classList.add('open'); };
 
 // ---------- set & packet picker ----------
+// In TTS-audio mode the picker only offers sets whose tossups ALL have
+// audio (the catalog carries every tossup id + set index; the audio
+// index is the qid list — coverage is one client-side pass). Other
+// modes list everything. If the audio index fails to load the filter
+// stays off and the per-question reveal fallback covers the gaps.
+let audioFullSets = null;  // Set of catalog set indices at 100% tossup audio
+
 fetch(QDATA_BASE + '/catalog.json').then(r => r.json()).then(cat => {
   CAT = cat;
-  $('setstatus').textContent = cat.sets.length + ' sets';
-  renderSetList('');
+  renderSetList($('setsearch').value);
+  computeAudioCoverage();
 });
-audio.loadAudioIndex().catch(() => {});
+audio.loadAudioIndex().then(computeAudioCoverage).catch(() => {});
 $('setsheet').classList.add('open');   // boot straight into picking a set
 
+function computeAudioCoverage() {
+  if (!CAT || !audio.indexLoaded()) return;   // needs both fetches
+  const total = new Array(CAT.sets.length).fill(0);
+  const covered = new Array(CAT.sets.length).fill(0);
+  const ids = CAT.tossups.id, setIdx = CAT.tossups.set;
+  for (let i = 0; i < ids.length; i++) {
+    const s = setIdx[i];
+    if (s < 0) continue;
+    total[s]++;
+    if (audio.hasAudio(ids[i])) covered[s]++;
+  }
+  audioFullSets = new Set();
+  for (let s = 0; s < CAT.sets.length; s++) {
+    if (total[s] && covered[s] === total[s]) audioFullSets.add(s);
+  }
+  renderSetList($('setsearch').value);
+}
+
 function renderSetList(filter) {
+  if (!CAT) return;
   const q = filter.trim().toLowerCase();
-  const opts = CAT.sets.filter(s => !q || s.name.toLowerCase().includes(q));
+  const audioOnly = $('modepick2').value === 'audio' && audioFullSets;
+  const opts = CAT.sets.filter((s, i) =>
+    (!q || s.name.toLowerCase().includes(q)) && (!audioOnly || audioFullSets.has(i)));
   $('setlist').innerHTML = opts.slice(0, 200).map(s =>
     `<option value="${s.slug}">${esc(s.name)} (diff ${s.difficulty ?? '?'})</option>`).join('');
+  if (!SET) {
+    $('setstatus').textContent = audioOnly
+      ? `${opts.length} sets with full TTS audio` : `${opts.length} sets`;
+  }
 }
 $('setsearch').oninput = e => renderSetList(e.target.value);
 
 // Reading mode is choosable in the set sheet (before starting) AND in
-// the header (mid-game); the two selects stay in sync.
-$('modepick2').onchange = () => { $('modepick').value = $('modepick2').value; };
-$('modepick').onchange = () => { $('modepick2').value = $('modepick').value; };
+// the header (mid-game); the two selects stay in sync. Audio mode
+// narrows the set list, so a mode change re-renders it.
+$('modepick2').onchange = () => { $('modepick').value = $('modepick2').value; renderSetList($('setsearch').value); };
+$('modepick').onchange = () => { $('modepick2').value = $('modepick').value; renderSetList($('setsearch').value); };
 
 $('setlist').onchange = async () => {
   const slug = $('setlist').value;

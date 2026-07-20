@@ -23,6 +23,7 @@ export function loadAudioIndex() {
 }
 
 export function hasAudio(qid) { return !!(HAVE && HAVE.has(qid)); }
+export function indexLoaded() { return !!HAVE; }
 export function audioUrl(qid) {
   return AUDIO_BASE + '/tossups/' + qid.slice(0, 2) + '/' + qid + '.opus';
 }
