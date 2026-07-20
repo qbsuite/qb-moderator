@@ -454,7 +454,7 @@ function refreshQlog(qid) {
   if (room) room.send({ t: 'qlog', qlog });
 }
 
-async function nextQuestion() {
+async function nextQuestion(autoStart) {
   stopClocks();
   logQuestion();
   pendingBuzz = null; selPlayer = null; controlling = null; earlyAnswer = null;
@@ -466,7 +466,8 @@ async function nextQuestion() {
   const wantedAudio = mode === 'audio';
   if (mode === 'audio' && !audio.hasAudio(q._id)) mode = 'reveal';  // never full text: no spoilers
   // pending = the ready gate: the question is loaded (audio buffering)
-  // but nothing reads and buzzers stay closed until the host hits Start.
+  // but nothing reads and buzzers stay closed. Only a fresh packet load
+  // waits for the host's Start; Next auto-starts (autoStart) once set up.
   cur = { q, units, powerIdx, superpowerIdx, mode, noAudio: wantedAudio && mode !== 'audio',
           pending: true,
           unitIdx: mode === 'text' ? null : 0,
@@ -478,16 +479,17 @@ async function nextQuestion() {
     const c = cur;
     c.mapper = await audio.positionMapper(q._id, units.length);
     if (cur !== c) return;   // undone/superseded while the sidecar loaded
-    player.load(q._id);   // buffer ahead; playback waits for Start
+    player.load(q._id);   // buffer ahead; play() waits for enough data
     player.el.playbackRate = voiceRate();
     player.el.onerror = () => degradeToReveal();
   }
+  if (autoStart) { startReading(false); return; }   // Next's click already pushed undo
   render();
 }
 
-function startReading() {
+function startReading(withUndo) {
   if (!cur || !cur.pending) return;
-  pushUndo();
+  if (withUndo !== false) pushUndo();
   cur.pending = false;
   dispatch({ type: 'question_start', qid: cur.q._id, powerIdx: cur.powerIdx,
              superpowerIdx: cur.superpowerIdx, unitCount: cur.units.length });
@@ -660,7 +662,7 @@ document.addEventListener('keydown', e => {
     if (i < cur.bonus.n) bonusToggle(i, !cur.bonus.given[i]);
   }
 });
-$('startbtn').onclick = startReading;
+$('startbtn').onclick = () => startReading();
 $('restartbtn').onclick = () => {
   // Replay the TTS from the top (missed audio, glitch). Buzz state and
   // scores are untouched; the position clock rewinds with the audio.
@@ -692,7 +694,7 @@ $('nextbtn').onclick = () => {
   if (review) { reviewNav(1); return; }
   pushUndo();
   if (state.phase === 'done') dispatch({ type: 'next' });
-  nextQuestion();
+  nextQuestion(true);
 };
 $('prevbtn').onclick = () => reviewNav(-1);
 $('undobtn').onclick = undo;

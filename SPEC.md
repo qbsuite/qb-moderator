@@ -94,10 +94,11 @@ the question deads when every player is locked after reading finishes.
   (missed/glitched playback); scores, lockouts, and the engine are
   untouched — only the position clock rewinds with it.
 - Every question loads into a **ready state** first (audio pre-buffered,
-  room buzzers closed); reading begins on the host's Start button, in
-  all three modes.
+  room buzzers closed). Only the first question of a freshly loaded
+  packet waits for the host's Start button; Next starts reading the
+  following question automatically, in all three modes.
 - `reveal` — reader-contract word-by-word reveal (wpm + slow note-run
-  spans); host can play; answer hidden until done.
+  spans); host can play; answer hidden until done. The default mode.
 - `text` — full text + answer always visible: the host is the moderator
   and reads aloud themselves. Position unknown (`unitIdx: null`).
 
@@ -219,7 +220,8 @@ for late joiners.
 - Host app (`app/room.js`): sends a display snapshot after every engine
   event, arms exactly when `phase==='reading' && !cur.pending &&
   !pendingBuzz` (each question loads into a ready state — audio
-  buffered, buzzers closed — and reads only on the host's Start), maps an
+  buffered, buzzers closed — and reads on the host's Start for a fresh
+  packet's first question, automatically on Next after that), maps an
   incoming buzz to `pendingBuzz` at the host's current clock position
   with the player preselected; locked-out players' buzzes re-arm.
   Player joins auto-`player_join` the engine roster.
