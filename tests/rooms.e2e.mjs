@@ -103,8 +103,10 @@ ok('leave fan-out');
 // --- latency-equalized arbitration ---
 // 'Slow' fakes ~190ms of extra RTT by delaying its pongs; after a few
 // arm cycles (pings ride each arm) its buzzes get ~100ms (capped)
-// backdating. It then buzzes 50ms AFTER 'Fast' and must still win —
-// estimated press time, not arrival, decides the race.
+// backdating. It then buzzes 25ms AFTER 'Fast' and must still win —
+// estimated press time, not arrival, decides the race. (25ms, not more:
+// the win margin is comp_slow − comp_fast − gap ≈ 100 − rtt/2 − 25, and
+// live-network send jitter has to fit inside it.)
 const { code: code2 } = await (await fetch(SERVER + '/rooms', { method: 'POST' })).json();
 const host2 = await connect(code2, 'Host2', 'host');
 await host2.next(m => m.t === 'welcome', 'host2 welcome');
@@ -125,12 +127,16 @@ host2.sendJson({ t: 'arm' });
 await fast.next(m => m.t === 'arm', 'final arm fast');
 await slow.next(m => m.t === 'arm', 'final arm slow');
 fast.sendJson({ t: 'buzz' });
-await sleep(50);
+// The host must hear about the FIRST arrival immediately (stop-reading
+// cue), before the arbitration window resolves.
+await host2.next(m => m.t === 'buzz_pending' && m.name === 'Fast', 'immediate pending notification');
+ok('host notified of first arrival before the window resolves');
+await sleep(25);
 slow.sendJson({ t: 'buzz' });
 const win = await host2.next(m => m.t === 'buzz', 'equalized winner', 8000);
 if (win.name !== 'Slow') fail('latency equalization: expected Slow to win, got ' + win.name);
 await fast.next(m => m.t === 'rejected', 'fast told it lost the window');
-ok('latency-equalized arbitration (high-RTT player wins a 50ms-later buzz)');
+ok('latency-equalized arbitration (high-RTT player wins a 25ms-later buzz)');
 fast.close(); slow.close(); host2.close();
 
 console.log('ROOMS E2E: all passed');

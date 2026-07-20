@@ -144,7 +144,11 @@ for late joiners.
   never pong get zero compensation, and with no RTT data at all the
   window is 0ms — plain first-arrival, the pre-equalization behavior
   (fully backward compatible). Roster entries carry each player's `rtt`
-  so hosts can eyeball implausible values.
+  so hosts can eyeball implausible values. Hosts additionally get
+  `{t:'buzz_pending', name}` the INSTANT the window opens (first
+  arrival) — the moderator's stop-reading cue; the equalized winner in
+  the following `{t:'buzz'}` may differ, so attribution waits for it
+  while the clock pause does not.
 - host→DO: `{t:'state', snapshot}` (stored + fanned out),
   `{t:'arm'}` / `{t:'disarm'}`.
 - DO→client: `{t:'welcome', snapshot, armed, roster}` on connect, plus

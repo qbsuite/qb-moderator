@@ -62,6 +62,7 @@ $('roombtn').onclick = async () => {
     const code = await createRoom();
     room = connectHost(code, {
       onBuzz: handleRemoteBuzz,
+      onBuzzPending: handleRemoteBuzzPending,
       onJoin: name => {
         connected.add(name);
         if (name && !state.players.includes(name)) {
@@ -82,9 +83,39 @@ $('roombtn').onclick = async () => {
   }
 };
 
+// First arrival at the server (buzz window just opened): stop the clock
+// NOW and pin the buzz position — the equalized winner may be someone
+// else and follows in handleRemoteBuzz within the window (<=200ms).
+function handleRemoteBuzzPending(name) {
+  if (!cur || state.phase !== 'reading' || pendingBuzz) return;
+  pauseReading();
+  pendingBuzz = { unitIdx: posNow(), ts: Date.now(), tentative: true };
+  selPlayer = name;
+  render();
+}
+
 function handleRemoteBuzz(name) {
-  if (!cur || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
   const lockouts = state.current ? state.current.lockouts : [];
+  if (pendingBuzz && pendingBuzz.tentative) {
+    // Resolution of a pending remote buzz: keep the pinned position,
+    // attribute it to the equalized winner.
+    if (lockouts.includes(name)) {
+      // Winner is locked out: undo the pause, reopen the buzzers.
+      pendingBuzz = null; selPlayer = null;
+      roomArmed = null;
+      resumeReading();
+      syncRoom(); render();
+      return;
+    }
+    delete pendingBuzz.tentative;
+    if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
+    selPlayer = name;
+    render();
+    return;
+  }
+  // No pending (old worker without buzz_pending, or state changed): the
+  // original single-message path.
+  if (!cur || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
   if (lockouts.includes(name)) { roomArmed = null; syncRoom(); return; }  // reopen buzzers
   if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
   pauseReading();

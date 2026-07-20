@@ -20,6 +20,10 @@
 //                  {t:'rejected'}          buzz while closed / lost the race (only to sender)
 //                  {t:'state', snapshot} / {t:'arm'} / {t:'disarm'}
 //   DO -> player : {t:'ping', n, ts}       RTT probe (sent on join + each arm)
+//   DO -> host   : {t:'buzz_pending', name} FIRST arrival, sent the instant
+//                  the collection window opens — moderators stop reading on
+//                  this; the equalized winner ({t:'buzz'}) may differ and
+//                  follows at window close
 //
 // Buzz arbitration is LATENCY-EQUALIZED: the first buzz while armed opens
 // a short collection window (sized to the slowest connected player's
@@ -221,6 +225,15 @@ export class RoomDO {
     }
   }
 
+  sendToHosts(obj) {
+    const msg = JSON.stringify(obj);
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() || {};
+      if (a.role !== 'host') continue;
+      try { ws.send(msg); } catch (e) { /* closing socket */ }
+    }
+  }
+
   async webSocketMessage(ws, raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
@@ -255,6 +268,9 @@ export class RoomDO {
       if (!armed) { ws.send(JSON.stringify({ t: 'rejected' })); return; }
       await this.ctx.storage.put('armed', false);
       this.pending = [{ ws, name: att.name, adj: now - this.compOf(att) }];
+      // Hosts hear about the FIRST arrival immediately (the moderator must
+      // stop reading now); the equalized winner follows at window close.
+      this.sendToHosts({ t: 'buzz_pending', name: att.name });
       setTimeout(() => this.resolveBuzz(), this.buzzWindow());
       return;
     }

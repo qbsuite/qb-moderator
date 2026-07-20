@@ -18,8 +18,11 @@ export async function createRoom(server = DEFAULT_SERVER) {
 }
 
 /**
- * Connect as host. handlers: {onBuzz(name), onJoin(name), onLeave(name),
- * onOpen(), onClose()}. Reconnects automatically until close() is called.
+ * Connect as host. handlers: {onBuzz(name), onBuzzPending(name),
+ * onJoin(name), onLeave(name), onOpen(), onClose()}. onBuzzPending fires
+ * the instant the server's buzz window opens (first arrival — stop
+ * reading NOW); onBuzz follows with the latency-equalized winner, who
+ * may differ. Reconnects automatically until close() is called.
  */
 export function connectHost(code, handlers, server = DEFAULT_SERVER) {
   const wsUrl = server.replace(/^http/, 'ws') + `/rooms/${code}/ws?name=host&role=host`;
@@ -33,6 +36,7 @@ export function connectHost(code, handlers, server = DEFAULT_SERVER) {
       let m;
       try { m = JSON.parse(e.data); } catch (err) { return; }
       if (m.t === 'buzz') handlers.onBuzz?.(m.name);
+      else if (m.t === 'buzz_pending') handlers.onBuzzPending?.(m.name);
       else if (m.t === 'join' && m.role === 'player') handlers.onJoin?.(m.name);
       else if (m.t === 'leave' && m.role === 'player') handlers.onLeave?.(m.name);
       else if (m.t === 'welcome') {
