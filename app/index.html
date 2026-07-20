@@ -66,6 +66,9 @@
 
   .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
     margin-top: 0.8rem; }
+  .speedctl { display: flex; align-items: center; gap: 0.4rem;
+    color: var(--muted); font-size: 0.86rem; }
+  .speedctl input { width: 8rem; }
   .buzzbtn { padding: 0.6rem 1.6rem; font-size: 1.05rem; font-weight: 700;
     border-radius: 9px; background: var(--good); border-color: var(--good); color: #06120b; }
   .buzzbtn.buzzed { background: var(--bad); border-color: var(--bad); color: #fff; }
@@ -188,6 +191,8 @@
     <div class="controls" id="controls">
       <button class="buzzbtn hidden" id="buzz">BUZZ (space)</button>
       <button class="hidden" id="playbtn">⏸</button>
+      <label class="speedctl hidden" id="speedctl"><span id="wpmval">380</span> wpm
+        <input type="range" id="wpm" min="120" max="700" step="10" value="380"></label>
       <button class="hidden" id="finishedbtn">Finished</button>
       <button class="hidden" id="deadbtn">Dead</button>
       <span class="grow"></span>
@@ -261,9 +266,6 @@
     <div class="srow"><input type="checkbox" id="optSuper"><label for="optSuper">Superpowers (+20)</label></div>
     <div class="srow"><input type="checkbox" checked id="optBonuses"><label for="optBonuses">Bonuses</label></div>
     <div class="srow"><input type="checkbox" checked id="optChecker"><label for="optChecker">Checker verdict suggestions</label></div>
-    <div class="srow"><label for="wpm">Reveal speed</label>
-      <input type="number" id="wpm" value="250" min="80" max="800" style="width:5rem">
-      <span class="muted">wpm</span></div>
     <div class="sheetfoot">
       <button onclick="document.getElementById('settingsheet').classList.remove('open')">Done</button>
     </div>

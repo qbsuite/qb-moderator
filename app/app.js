@@ -364,17 +364,28 @@ async function nextQuestion() {
 
 function degradeToReveal() {
   if (!cur || cur.mode !== 'audio') return;
-  cur.mode = 'reveal'; cur.noAudio = true;
+  cur.mode = 'reveal'; cur.degraded = true;
   cur.unitIdx = 0;
   cur.slow = slowSpans(cur.units.map(u => u.t));
   scheduleReveal();
   render();
 }
 
+// Reveal pacing = the reader's engine: 60000/wpm per unit, slowed by
+// SLOW_FACTOR when the current OR next unit is in a slow note-run span
+// (reader.js scheduleStep — same lookahead, same factor). The slider is
+// read live each tick, so speed changes apply mid-question.
 function msPerUnit(i) {
-  const base = 60000 / Math.min(800, Math.max(80, +$('wpm').value || 250));
-  return cur.slow && cur.slow.has(i) ? base * SLOW_FACTOR : base;
+  const base = 60000 / (+$('wpm').value || 380);
+  return cur.slow && (cur.slow.has(i) || cur.slow.has(i + 1)) ? base * SLOW_FACTOR : base;
 }
+
+$('wpm').value = +localStorage.qbmodWpm || 380;
+$('wpmval').textContent = $('wpm').value;
+$('wpm').oninput = () => {
+  $('wpmval').textContent = $('wpm').value;
+  localStorage.qbmodWpm = $('wpm').value;
+};
 
 function scheduleReveal() {
   clearTimeout(cur.timer);
@@ -506,9 +517,10 @@ function renderMain() {
   const hostReads = cur.mode === 'text';
 
   $('modeline').innerHTML =
-    cur.noAudio ? '<span class="warn">⚠ no TTS audio for this question — revealing text</span>'
+    cur.degraded ? '<span class="warn">⚠ audio failed for this question — revealing text</span>'
+    : cur.noAudio ? '<span class="warn">⚠ no TTS audio for this question — revealing text</span>'
     : cur.mode === 'audio' ? '♪ reading aloud — text hidden until the end'
-    : cur.mode === 'reveal' ? `reveal · ${+$('wpm').value || 250} wpm`
+    : cur.mode === 'reveal' ? 'word-by-word reveal'
     : 'full text — you read';
 
   renderQText();
@@ -520,6 +532,7 @@ function renderMain() {
   }
 
   $('progress').classList.toggle('hidden', cur.mode !== 'audio' || phase === 'done');
+  $('speedctl').classList.toggle('hidden', cur.mode !== 'reveal' || phase !== 'reading');
   $('playbtn').classList.toggle('hidden', hostReads || phase !== 'reading');
   $('finishedbtn').classList.toggle('hidden', !hostReads || phase !== 'reading');
   $('finishedbtn').disabled = !!state.current?.readingFinished;
