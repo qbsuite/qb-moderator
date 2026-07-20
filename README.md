@@ -67,7 +67,7 @@ Question content reaches this tool via [qbreader](https://www.qbreader.org)
 and the tournament authors whose packets it archives. Answer checking is
 [qb-answer-checker](https://github.com/qbreader/qb-answer-checker)
 (ISC © Geoffrey Wu), vendored with attribution. Uploaded packets are
-parsed by the hosted
-[YAPP](https://github.com/alopezlago/YetAnotherPacketParser) service
-(Yet Another Packet Parser © Alejandro Lopez-Lago) — the same parser
-MODAQ uses. MIT license.
+parsed entirely in the browser by
+[qb-packet-parser](https://github.com/qbreader/qb-packet-parser)
+(ISC © qbreader — the JS port of qbreader's packet parser), vendored —
+no hosted service involved. MIT license.

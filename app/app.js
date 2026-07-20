@@ -167,65 +167,73 @@ $('loadbtn').onclick = () => {
   nextQuestion();
 };
 
-// ---------- upload your own packets (parsed by YAPP) ----------
-// Each .docx/.html file becomes one packet: parsed by alopezlago's
-// hosted YAPP service (Yet Another Packet Parser — CORS-open, MODAQ
-// JSON), then mapped onto the same set-payload shape the R2 sets use,
-// so everything downstream (reading modes, bonuses, rooms) just works.
-// Uploaded questions have no TTS audio, so audio mode falls back to
-// reveal automatically.
-const YAPP_API = 'https://www.quizbowlreader.com/yapp/api/parse?version=2&modaq=true';
-const stripTags = s => String(s || '').replace(/<[^>]+>/g, '');
+// ---------- upload your own packets (parsed client-side) ----------
+// Each .docx/.txt file becomes one packet, parsed IN THE BROWSER by
+// the vendored qb-packet-parser (qbreader's parser, JS port — see
+// vendor/qb_packet_parser.mjs; no hosted service involved). Its output
+// is the same qbreader doc shape the R2 sets use — question_sanitized,
+// answers, even auto-classified categories — so everything downstream
+// (reading modes, bonuses, rooms) works unchanged. Uploads have no TTS
+// audio; audio mode falls back to reveal automatically.
+let ParserClass = null;   // lazy-loaded: the bundle is ~2 MB
 
-function mapYappPacket(json, number, name) {
-  return {
-    number, name,
-    tossups: (json.tossups || []).map((t, j) => ({
-      _id: `up-${number}-t${j}`,
-      question_sanitized: stripTags(t.question),
-      answer: t.answer || '',
-    })),
-    bonuses: (json.bonuses || []).map((b, j) => ({
-      _id: `up-${number}-b${j}`,
-      leadin_sanitized: stripTags(b.leadin),
-      parts_sanitized: (b.parts || []).map(stripTags),
-      answers: b.answers || [],
-    })),
-  };
+// The parser needs to know whether the packet has question numbers /
+// category tags, and guessing wrong ruins the parse — so try the
+// combinations and keep the parse that finds the most questions.
+async function parsePacketAuto(input, isDocx, name) {
+  let best = null;
+  for (const hasQuestionNumbers of [true, false]) {
+    for (const hasCategoryTags of [false, true]) {
+      try {
+        const parser = new ParserClass({ hasQuestionNumbers, hasCategoryTags });
+        const { data, warnings } = isDocx
+          ? await parser.parseDocxPacket(input, name)
+          : parser.parsePacket(input, name);
+        const n = (data.tossups?.length || 0) + (data.bonuses?.length || 0);
+        const score = n * 100 - warnings.length;
+        if (n && (!best || score > best.score)) best = { data, warnings, score };
+      } catch (e) { /* wrong settings for this packet — try the next combo */ }
+    }
+  }
+  return best;
 }
 
 $('upload').onchange = async () => {
   const files = [...$('upload').files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   if (!files.length) return;
-  $('setstatus').textContent = 'Parsing…';
   $('loadbtn').disabled = true;
+  if (!ParserClass) {
+    $('setstatus').textContent = 'Loading parser…';
+    ParserClass = (await import('./vendor/qb_packet_parser.mjs')).default;
+  }
   const packets = [];
+  let warned = 0;
   for (const f of files) {
     $('setstatus').textContent = `Parsing ${f.name}…`;
-    let r;
-    try {
-      r = await fetch(YAPP_API, { method: 'POST', body: f, mode: 'cors' });
-    } catch (e) {
-      $('setstatus').textContent = `Couldn’t reach the packet parser (${e.message}).`;
+    const isDocx = /\.docx$/i.test(f.name);
+    const input = isDocx ? await f.arrayBuffer() : await f.text();
+    const best = await parsePacketAuto(input, isDocx, f.name);
+    if (!best) {
+      $('setstatus').textContent = `${f.name}: couldn’t find any questions — is it a packet in docx/txt form?`;
       return;
     }
-    if (!r.ok) {
-      $('setstatus').textContent = `${f.name}: parser said HTTP ${r.status} — is it a packet in docx/html form?`;
-      return;
-    }
-    const json = await r.json();
-    if (!(json.tossups || []).length && !(json.bonuses || []).length) {
-      $('setstatus').textContent = `${f.name}: no questions found in the parse.`;
-      return;
-    }
-    packets.push(mapYappPacket(json, packets.length + 1, f.name.replace(/\.[^.]*$/, '')));
+    warned += best.warnings.length;
+    const number = packets.length + 1;
+    packets.push({
+      number,
+      name: f.name.replace(/\.[^.]*$/, ''),
+      tossups: (best.data.tossups || []).map((t, j) => ({ ...t, _id: `up-${number}-t${j}` })),
+      bonuses: (best.data.bonuses || []).map((b, j) => ({ ...b, _id: `up-${number}-b${j}` })),
+    });
   }
   SET = { name: files.length === 1 ? packets[0].name : `Uploaded (${files.length} packets)`, packets };
   $('packetpick').innerHTML = SET.packets.map((p, i) =>
     `<option value="${i}">Packet ${p.number}${p.name ? ' — ' + esc(p.name) : ''} (${p.tossups.length} TU)</option>`).join('');
   const tus = packets.reduce((n, p) => n + p.tossups.length, 0);
   const bs = packets.reduce((n, p) => n + p.bonuses.length, 0);
-  $('setstatus').textContent = `${SET.name} — ${tus} tossups, ${bs} bonuses (no TTS audio for uploads)`;
+  $('setstatus').textContent = `${SET.name} — ${tus} tossups, ${bs} bonuses`
+    + (warned ? ` · ${warned} parse warning${warned > 1 ? 's' : ''} (check questions look right)` : '')
+    + ' (no TTS audio for uploads)';
   $('loadbtn').disabled = false;
 };
 
