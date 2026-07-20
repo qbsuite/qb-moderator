@@ -11,14 +11,19 @@
 //
 // Protocol (all JSON text frames):
 //   player -> DO : {t:'buzz'}
+//                  {t:'answer', text}      typed answer, relayed to hosts
 //                  {t:'pong', n, ts}       echo of a ping (RTT sample)
 //   host   -> DO : {t:'state', snapshot}   display snapshot, stored + fanned out
 //                  {t:'arm'} / {t:'disarm'} open/close the buzzers
+//                  {t:'answer_result', name, result, prompt?} verdict for a
+//                  typed answer, broadcast to everyone
 //   DO -> client : {t:'welcome', snapshot, armed, roster}
 //                  {t:'join'|'leave', name, role}
 //                  {t:'buzz', name}        winning buzz, buzzers close
 //                  {t:'rejected'}          buzz while closed / lost the race (only to sender)
 //                  {t:'state', snapshot} / {t:'arm'} / {t:'disarm'}
+//                  {t:'answer_result', name, result, prompt?}
+//   DO -> host   : {t:'answer', name, text} a player's typed answer
 //   DO -> player : {t:'ping', n, ts}       RTT probe (sent on join + each arm)
 //   DO -> host   : {t:'buzz_pending', name} FIRST arrival, sent the instant
 //                  the collection window opens — moderators stop reading on
@@ -253,6 +258,13 @@ export class RoomDO {
         }
         return;
       }
+      if (msg.t === 'answer') {
+        // Typed answer from a buzzer. The engine and checker live in the
+        // host app, so this is a pure relay; hosts drop answers from
+        // anyone who doesn't hold the pending buzz.
+        this.sendToHosts({ t: 'answer', name: att.name, text: String(msg.text ?? '').slice(0, 300) });
+        return;
+      }
       if (msg.t !== 'buzz') return;
       const now = Date.now();
       if (this.pending) {
@@ -286,6 +298,13 @@ export class RoomDO {
     } else if (msg.t === 'disarm') {
       await this.ctx.storage.put('armed', false);
       this.broadcast({ t: 'disarm' }, ws);
+    } else if (msg.t === 'answer_result') {
+      // Verdict for a typed answer: the answering player renders it
+      // (prompt reopens their input); everyone else sees the outcome.
+      this.broadcast({
+        t: 'answer_result', name: msg.name,
+        result: msg.result, prompt: msg.prompt ?? null,
+      }, ws);
     } else if (msg.t === 'qlog') {
       // Completed-question log (text + answer + result) so players can
       // browse what was read; stored for late joiners.

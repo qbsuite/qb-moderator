@@ -130,7 +130,9 @@ for late joiners.
 - `GET /rooms/:code/ws?name=&role=host|player` → WebSocket.
 - player→DO: `{t:'buzz'}` — accepted only while armed; otherwise
   `{t:'rejected'}` to the sender. Also `{t:'pong', n, ts}` echoing an
-  RTT probe.
+  RTT probe, and `{t:'answer', text}` — a typed answer, relayed to
+  hosts as `{t:'answer', name, text}` (capped at 300 chars; the host
+  app drops answers from anyone but the pending buzzer).
 - **Latency-equalized arbitration**: the DO pings players (`{t:'ping',
   n, ts}`, on join + each arm) and keeps a per-connection median RTT.
   The first buzz while armed disarms atomically (DO messages are
@@ -150,7 +152,18 @@ for late joiners.
   the following `{t:'buzz'}` may differ, so attribution waits for it
   while the clock pause does not.
 - host→DO: `{t:'state', snapshot}` (stored + fanned out),
-  `{t:'arm'}` / `{t:'disarm'}`.
+  `{t:'arm'}` / `{t:'disarm'}`, and `{t:'answer_result', name, result,
+  prompt?}` — broadcast verbatim. **Typed-answer flow**: the buzz
+  winner's phone shows an answer input; the submitted text relays to
+  the host, which runs the vendored checker — accept/reject score the
+  buzz immediately (`applyVerdict`), `prompt` goes back as
+  `{result:'prompt', prompt: directedPrompt?}` and keeps the buzz open
+  for a retype (repeatable; the host's ✓/✗ can end the loop any time).
+  Every verdict on a remote buzz — typed or host-tapped — is broadcast
+  as an `answer_result` (`correct`/`wrong`; `done` releases the bar
+  with no verdict, e.g. deading over a pending buzz), so the buzzer's
+  phone always shows the outcome. With checker suggestions off, typed
+  answers just fill the host's adjudication field.
 - DO→client: `{t:'welcome', snapshot, armed, roster}` on connect, plus
   join/leave fan-out.
 - Host app (`app/room.js`): sends a display snapshot after every engine
@@ -160,7 +173,8 @@ for late joiners.
   Player joins auto-`player_join` the engine roster.
 - Player page (`app/player.html`): join by code (+`?code=`/`?server=`
   URL params), full-screen buzz button (armed/waiting/mine/other/
-  locked states), live scoreboard, vibration, auto-reconnect.
+  locked states), typed-answer bar (input → sent → prompt/correct/
+  wrong), live scoreboard, vibration, auto-reconnect.
 - Live protocol test: `node tests/rooms.e2e.mjs` (not in CI — hits the
   deployed instance).
 

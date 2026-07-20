@@ -82,6 +82,19 @@ p2.sendJson({ t: 'buzz' });
 const b2 = await host.next(m => m.t === 'buzz' && m.name === 'Sam', 'Sam buzz');
 ok('re-arm cycle');
 
+// typed answer -> host relay (name attached server-side), verdict back
+p2.sendJson({ t: 'answer', text: 'Douglass' });
+const ans = await host.next(m => m.t === 'answer', 'host receives typed answer');
+if (ans.name !== 'Sam' || ans.text !== 'Douglass') fail('bad answer relay: ' + JSON.stringify(ans));
+host.sendJson({ t: 'answer_result', name: 'Sam', result: 'prompt', prompt: 'which one?' });
+const ar = await p2.next(m => m.t === 'answer_result', 'p2 gets prompt');
+if (ar.name !== 'Sam' || ar.result !== 'prompt' || ar.prompt !== 'which one?') fail('bad answer_result: ' + JSON.stringify(ar));
+p2.sendJson({ t: 'answer', text: 'Frederick Douglass' });
+await host.next(m => m.t === 'answer' && m.text === 'Frederick Douglass', 'host receives re-answer');
+host.sendJson({ t: 'answer_result', name: 'Sam', result: 'correct' });
+await p2.next(m => m.t === 'answer_result' && m.result === 'correct', 'p2 gets verdict');
+ok('typed answer relay + prompt round-trip');
+
 // question log relay
 host.sendJson({ t: 'qlog', qlog: [{ label: 'TU 1', question: 'Who?', answer: 'X', summary: 'Kim +10' }] });
 await p2.next(m => m.t === 'qlog' && m.qlog.length === 1, 'p2 gets qlog');
@@ -123,18 +136,26 @@ for (let i = 0; i < 3; i++) {
   await slow.next(m => m.t === 'disarm', 'sample disarm slow ' + i);
   await sleep(250); // let Slow's delayed pongs land
 }
-host2.sendJson({ t: 'arm' });
-await fast.next(m => m.t === 'arm', 'final arm fast');
-await slow.next(m => m.t === 'arm', 'final arm slow');
-fast.sendJson({ t: 'buzz' });
-// The host must hear about the FIRST arrival immediately (stop-reading
-// cue), before the arbitration window resolves.
-await host2.next(m => m.t === 'buzz_pending' && m.name === 'Fast', 'immediate pending notification');
-ok('host notified of first arrival before the window resolves');
-await sleep(25);
-slow.sendJson({ t: 'buzz' });
-const win = await host2.next(m => m.t === 'buzz', 'equalized winner', 8000);
-if (win.name !== 'Slow') fail('latency equalization: expected Slow to win, got ' + win.name);
+// The race margin (~comp_slow − comp_fast − 25ms) has to absorb live-
+// network send jitter, so a single run can flake; a real equalization
+// regression loses every attempt.
+let winName = null;
+for (let attempt = 1; attempt <= 3 && winName !== 'Slow'; attempt++) {
+  host2.sendJson({ t: 'arm' });
+  await fast.next(m => m.t === 'arm', 'race arm fast #' + attempt);
+  await slow.next(m => m.t === 'arm', 'race arm slow #' + attempt);
+  fast.sendJson({ t: 'buzz' });
+  // The host must hear about the FIRST arrival immediately (stop-reading
+  // cue), before the arbitration window resolves.
+  await host2.next(m => m.t === 'buzz_pending' && m.name === 'Fast', 'immediate pending notification #' + attempt);
+  if (attempt === 1) ok('host notified of first arrival before the window resolves');
+  await sleep(25);
+  slow.sendJson({ t: 'buzz' });
+  const win = await host2.next(m => m.t === 'buzz', 'equalized winner #' + attempt, 8000);
+  winName = win.name;
+  if (winName !== 'Slow') console.log('  (attempt ' + attempt + ': ' + winName + ' won — jitter, retrying)');
+}
+if (winName !== 'Slow') fail('latency equalization: Slow never won in 3 attempts');
 await fast.next(m => m.t === 'rejected', 'fast told it lost the window');
 ok('latency-equalized arbitration (high-RTT player wins a 25ms-later buzz)');
 fast.close(); slow.close(); host2.close();

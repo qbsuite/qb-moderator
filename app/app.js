@@ -43,6 +43,7 @@ const player = audio.createPlayer();
 
 let room = null;           // connected room (room.js) or null
 let roomArmed = null;      // last arm/disarm sent, to avoid spam
+let earlyAnswer = null;    // {name, text} typed before the buzz window resolved
 const connected = new Set();  // player names currently connected via the room
 const qlog = [];           // completed questions [{label, question, answer, summary}]
 
@@ -63,6 +64,7 @@ $('roombtn').onclick = async () => {
     room = connectHost(code, {
       onBuzz: handleRemoteBuzz,
       onBuzzPending: handleRemoteBuzzPending,
+      onAnswer: handleRemoteAnswer,
       onJoin: name => {
         connected.add(name);
         if (name && !state.players.includes(name)) {
@@ -89,6 +91,7 @@ $('roombtn').onclick = async () => {
 function handleRemoteBuzzPending(name) {
   if (!cur || state.phase !== 'reading' || pendingBuzz) return;
   pauseReading();
+  earlyAnswer = null;
   pendingBuzz = { unitIdx: posNow(), ts: Date.now(), tentative: true };
   selPlayer = name;
   render();
@@ -101,7 +104,7 @@ function handleRemoteBuzz(name) {
     // attribute it to the equalized winner.
     if (lockouts.includes(name)) {
       // Winner is locked out: undo the pause, reopen the buzzers.
-      pendingBuzz = null; selPlayer = null;
+      pendingBuzz = null; selPlayer = null; earlyAnswer = null;
       roomArmed = null;
       resumeReading();
       syncRoom(); render();
@@ -111,6 +114,11 @@ function handleRemoteBuzz(name) {
     if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
     selPlayer = name;
     render();
+    // A typed answer can outrun the window resolution across the two
+    // sockets; apply it now that the winner is known.
+    const early = earlyAnswer;
+    earlyAnswer = null;
+    if (early && early.name === name) handleRemoteAnswer(name, early.text);
     return;
   }
   // No pending (old worker without buzz_pending, or state changed): the
@@ -122,6 +130,29 @@ function handleRemoteBuzz(name) {
   pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
   selPlayer = name;
   render();
+}
+
+// A player typed an answer on their phone. Run the checker: accept /
+// reject score immediately, prompt goes back to the player and keeps
+// the buzz open for another try. With suggestions off (or an upload
+// whose answerline confuses the checker) the answer just fills the
+// adjudication field for the host's ✓/✗.
+function handleRemoteAnswer(name, text) {
+  if (!pendingBuzz || !text) return;
+  if (pendingBuzz.tentative) { earlyAnswer = { name, text }; return; }
+  if (name !== selPlayer) return;
+  $('givenanswer').value = text;
+  let v = null;
+  if ($('optChecker').checked && cur && typeof qbCheckAnswer === 'function') {
+    try { v = qbCheckAnswer(cur.q.answer, text); } catch (e) { v = null; }
+  }
+  if (!v) { render(); return; }
+  if (v.directive === 'prompt') {
+    room.send({ t: 'answer_result', name, result: 'prompt', prompt: v.directedPrompt ?? null });
+    render();
+  } else {
+    applyVerdict(v.directive === 'accept' ? 'correct' : 'wrong');
+  }
 }
 
 function buildSnapshot() {
@@ -330,7 +361,7 @@ function logQuestion() {
 async function nextQuestion() {
   stopClocks();
   logQuestion();
-  pendingBuzz = null; selPlayer = null; controlling = null;
+  pendingBuzz = null; selPlayer = null; controlling = null; earlyAnswer = null;
   tuIdx++;
   if (tuIdx >= packet.tossups.length) { renderPacketDone(); return; }
   const q = packet.tossups[tuIdx];
@@ -452,12 +483,16 @@ function buzz(unitIdx = undefined) {
 
 function applyVerdict(result, points = null) {
   if (!pendingBuzz || !selPlayer) return;
+  const buzzer = selPlayer;
   dispatch({ type: 'buzz', player: selPlayer, unitIdx: pendingBuzz.unitIdx, ts: pendingBuzz.ts });
   const given = $('givenanswer').value.trim() || null;
   const source = given && suggested() === result ? 'checker' : 'host';
   if (result === 'correct') controlling = selPlayer;
   dispatch({ type: 'verdict', result, points, source, answer: given });
-  pendingBuzz = null; selPlayer = null;
+  pendingBuzz = null; selPlayer = null; earlyAnswer = null;
+  // Room players get the verdict on their phones (their own buzz shows
+  // correct/wrong; a typed answer's prompt loop closes here too).
+  if (room) room.send({ t: 'answer_result', name: buzzer, result });
   $('givenanswer').value = '';
   resumeReading();
   render();
@@ -504,7 +539,14 @@ $('playbtn').onclick = () => {
   }
 };
 $('finishedbtn').onclick = () => dispatch({ type: 'reading_finished' });
-$('deadbtn').onclick = () => { pauseReading(); pendingBuzz = null; dispatch({ type: 'dead' }); };
+$('deadbtn').onclick = () => {
+  pauseReading();
+  // Deading over a pending remote buzz: release the player's answer bar
+  // ('done' is terminal but not a wrong on their screen).
+  if (room && pendingBuzz && selPlayer) room.send({ t: 'answer_result', name: selPlayer, result: 'done' });
+  pendingBuzz = null; earlyAnswer = null;
+  dispatch({ type: 'dead' });
+};
 $('nextbtn').onclick = () => { if (state.phase === 'done') dispatch({ type: 'next' }); nextQuestion(); };
 $('vcorrect').onclick = () => applyVerdict('correct');
 $('vwrong').onclick = () => applyVerdict('wrong');

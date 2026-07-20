@@ -38,6 +38,17 @@
   #buzzmode { background: var(--input); color: var(--muted); border: 1px solid var(--border);
     border-radius: 6px; font-size: 0.78rem; padding: 0.1rem 0.5rem; cursor: pointer; }
 
+  #answerbar { display: none; padding: 0.7rem 1rem 0; }
+  #answerbar.on { display: block; }
+  #verdictline { min-height: 1.3em; font-size: 0.95rem; padding-bottom: 0.3rem; }
+  #answerrow { display: flex; gap: 0.5rem; }
+  #answerrow input { flex: 1; min-width: 0; padding: 0.7rem 0.8rem; font-size: 1.05rem;
+    background: var(--input); color: var(--text); border: 1px solid var(--border);
+    border-radius: 9px; }
+  #answerrow button { padding: 0.7rem 1.2rem; font-size: 1rem; font-weight: 700;
+    background: var(--link); color: #fff; border: none; border-radius: 9px; cursor: pointer; }
+  #answerrow input:disabled, #answerrow button:disabled { opacity: 0.5; }
+
   #bigbuzz { flex: 1; margin: 1rem; border: none; border-radius: 22px;
     font-size: 2.2rem; font-weight: 800; color: #06120b; background: var(--good);
     cursor: pointer; touch-action: none; transition: background 0.1s; }
@@ -86,6 +97,13 @@
       <span class="muted" id="qlabel"></span>
       <button id="buzzmode" title="When your buzz fires: the instant you touch the button, or when you let go"></button>
       <span class="muted" id="conn">●</span>
+    </div>
+    <div id="answerbar">
+      <div id="verdictline"></div>
+      <div id="answerrow">
+        <input id="answer" placeholder="Answer" autocomplete="off" autocapitalize="off">
+        <button id="senda">Send</button>
+      </div>
     </div>
     <button id="bigbuzz" class="waiting">…</button>
     <div id="board"></div>
@@ -136,15 +154,31 @@ function connect() {
     // Echo RTT probes immediately (first, before any rendering) — the
     // server's latency-equalized buzz arbitration depends on them.
     if (m.t === 'ping') { try { ws.send(JSON.stringify({ t: 'pong', n: m.n, ts: m.ts })); } catch (err) {} return; }
-    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false; renderAll(); renderPast(); }
+    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false; answerBar(null); renderAll(); renderPast(); }
     else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
-    else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; vibrate(40); renderBuzz(); }
+    else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; answerBar(null); vibrate(40); renderBuzz(); }
     else if (m.t === 'disarm') { armed = false; sentBuzz = false; renderBuzz(); }
     else if (m.t === 'buzz') {
       armed = false;
       sentBuzz = false;
-      if (m.name === me) { mineBuzz = true; vibrate([60, 40, 60]); }
+      if (m.name === me) {
+        mineBuzz = true; vibrate([60, 40, 60]);
+        $('answer').value = '';
+        answerBar('input');
+      }
       renderBuzz(m.name);
+    }
+    else if (m.t === 'answer_result' && m.name === me) {
+      if (m.result === 'prompt') {
+        vibrate(60);
+        answerBar('prompt', 'prompt' + (m.prompt ? ': ' + esc(m.prompt) : ''));
+      } else if (m.result === 'correct') {
+        vibrate([40, 30, 40]);
+        answerBar('done', '<span class="good">correct</span>');
+      } else if (m.result === 'wrong') {
+        vibrate(80);
+        answerBar('done', '<span class="bad">wrong</span>');
+      } else answerBar(null);
     }
     else if (m.t === 'rejected') { sentBuzz = false; renderBuzz(); }
     else if (m.t === 'state') { snapshot = m.snapshot; renderAll(); }
@@ -157,6 +191,29 @@ function connect() {
 }
 
 function vibrate(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+// The typed-answer bar over the buzz button. States: 'input' (my buzz
+// won, type it), 'sent' (waiting on the verdict), 'prompt' (try again),
+// 'done' (terminal verdict shown), null (hidden). Verdicts for buzzes
+// with no typed answer land here too, so a host ✓/✗ still shows.
+function answerBar(state, html) {
+  const typing = state === 'input' || state === 'prompt';
+  $('answerbar').classList.toggle('on', !!state);
+  $('verdictline').innerHTML = html || '';
+  $('answerrow').style.display = state === 'done' ? 'none' : '';
+  $('answer').disabled = !typing;
+  $('senda').disabled = !typing;
+  if (typing) { $('answer').focus(); $('answer').select(); }
+}
+
+function sendAnswer() {
+  const text = $('answer').value.trim();
+  if (!text || $('senda').disabled || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ t: 'answer', text }));
+  answerBar('sent', '<span class="muted">…</span>');
+}
+$('senda').onclick = sendAnswer;
+$('answer').addEventListener('keydown', e => { if (e.key === 'Enter') sendAnswer(); });
 
 // A sleeping phone can't buzz: hold a screen wake lock while in a room,
 // re-acquiring on tab return (the OS releases it on hide).
