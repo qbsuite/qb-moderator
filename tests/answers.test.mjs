@@ -132,6 +132,17 @@ test('a stashed answer from a losing buzzer is dropped', () => {
   assert.equal(ctx.earlyAnswer, null);
 });
 
+test('remote buzzes are ignored before Start (ready gate)', () => {
+  const ctx = harness();
+  ctx.cur.pending = true;
+  ctx.handleRemoteBuzzPending('Kim');
+  assert.equal(ctx.pendingBuzz, null);
+  assert.equal(ctx.selPlayer, null);
+  ctx.handleRemoteBuzz('Kim');
+  assert.equal(ctx.pendingBuzz, null);
+  assert.equal(ctx.calls.paused, 0);
+});
+
 test('answers from a non-buzzer are ignored', () => {
   const ctx = harness();
   ctx.handleRemoteBuzzPending('Kim');

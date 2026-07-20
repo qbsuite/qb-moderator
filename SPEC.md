@@ -81,7 +81,12 @@ the question deads when every player is locked after reading finishes.
 - `audio` — qb-audio TTS; question text AND answer hidden until the
   question ends, so the host can play. Position from the audio clock via
   sidecars. Falls back to `reveal` when a qid has no audio (never to
-  full text — no spoilers).
+  full text — no spoilers). A ⟲ button replays the audio from the top
+  (missed/glitched playback); scores, lockouts, and the engine are
+  untouched — only the position clock rewinds with it.
+- Every question loads into a **ready state** first (audio pre-buffered,
+  room buzzers closed); reading begins on the host's Start button, in
+  all three modes.
 - `reveal` — reader-contract word-by-word reveal (wpm + slow note-run
   spans); host can play; answer hidden until done.
 - `text` — full text + answer always visible: the host is the moderator
@@ -167,7 +172,9 @@ for late joiners.
 - DO→client: `{t:'welcome', snapshot, armed, roster}` on connect, plus
   join/leave fan-out.
 - Host app (`app/room.js`): sends a display snapshot after every engine
-  event, arms exactly when `phase==='reading' && !pendingBuzz`, maps an
+  event, arms exactly when `phase==='reading' && !cur.pending &&
+  !pendingBuzz` (each question loads into a ready state — audio
+  buffered, buzzers closed — and reads only on the host's Start), maps an
   incoming buzz to `pendingBuzz` at the host's current clock position
   with the player preselected; locked-out players' buzzes re-arm.
   Player joins auto-`player_join` the engine roster.

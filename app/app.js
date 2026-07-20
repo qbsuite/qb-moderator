@@ -89,7 +89,7 @@ $('roombtn').onclick = async () => {
 // NOW and pin the buzz position — the equalized winner may be someone
 // else and follows in handleRemoteBuzz within the window (<=200ms).
 function handleRemoteBuzzPending(name) {
-  if (!cur || state.phase !== 'reading' || pendingBuzz) return;
+  if (!cur || cur.pending || state.phase !== 'reading' || pendingBuzz) return;
   pauseReading();
   earlyAnswer = null;
   pendingBuzz = { unitIdx: posNow(), ts: Date.now(), tentative: true };
@@ -123,7 +123,7 @@ function handleRemoteBuzz(name) {
   }
   // No pending (old worker without buzz_pending, or state changed): the
   // original single-message path.
-  if (!cur || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
+  if (!cur || cur.pending || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
   if (lockouts.includes(name)) { roomArmed = null; syncRoom(); return; }  // reopen buzzers
   if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
   pauseReading();
@@ -172,7 +172,7 @@ function buildSnapshot() {
 function syncRoom() {
   if (!room) return;
   room.send({ t: 'state', snapshot: buildSnapshot() });
-  const wantArmed = !!(cur && state.phase === 'reading' && !pendingBuzz);
+  const wantArmed = !!(cur && !cur.pending && state.phase === 'reading' && !pendingBuzz);
   if (wantArmed !== roomArmed) {
     roomArmed = wantArmed;
     room.send({ t: wantArmed ? 'arm' : 'disarm' });
@@ -369,26 +369,38 @@ async function nextQuestion() {
   let mode = $('modepick').value;
   const wantedAudio = mode === 'audio';
   if (mode === 'audio' && !audio.hasAudio(q._id)) mode = 'reveal';  // never full text: no spoilers
+  // pending = the ready gate: the question is loaded (audio buffering)
+  // but nothing reads and buzzers stay closed until the host hits Start.
   cur = { q, units, powerIdx, superpowerIdx, mode, noAudio: wantedAudio && mode !== 'audio',
+          pending: true,
           unitIdx: mode === 'text' ? null : 0,
           slow: mode === 'reveal' ? slowSpans(units.map(u => u.t)) : null,
           mapper: null, timer: null, bonus: null };
   qidMeta[q._id] = { label: `${packetLabel} · Tossup ${tuIdx + 1}` };
-  dispatch({ type: 'question_start', qid: q._id, powerIdx, superpowerIdx, unitCount: units.length });
 
   if (mode === 'audio') {
     cur.mapper = await audio.positionMapper(q._id, units.length);
-    player.load(q._id);
+    player.load(q._id);   // buffer ahead; playback waits for Start
     player.el.playbackRate = voiceRate();
+    player.el.onerror = () => degradeToReveal();
+  }
+  render();
+}
+
+function startReading() {
+  if (!cur || !cur.pending) return;
+  cur.pending = false;
+  dispatch({ type: 'question_start', qid: cur.q._id, powerIdx: cur.powerIdx,
+             superpowerIdx: cur.superpowerIdx, unitCount: cur.units.length });
+  if (cur.mode === 'audio') {
     player.el.ontimeupdate = () => {
       if (!cur || state.phase !== 'reading') return;
       cur.unitIdx = cur.mapper(player.el.currentTime, player.el.duration);
       renderProgress();
     };
     player.el.onended = () => dispatch({ type: 'reading_finished' });
-    player.el.onerror = () => degradeToReveal();
     player.play().catch(() => degradeToReveal());
-  } else if (mode === 'reveal') {
+  } else if (cur.mode === 'reveal') {
     scheduleReveal();
   }
   render();
@@ -399,7 +411,7 @@ function degradeToReveal() {
   cur.mode = 'reveal'; cur.degraded = true;
   cur.unitIdx = 0;
   cur.slow = slowSpans(cur.units.map(u => u.t));
-  scheduleReveal();
+  if (!cur.pending) scheduleReveal();   // pre-Start failures wait for Start
   render();
 }
 
@@ -473,7 +485,7 @@ function eligible() {
 }
 
 function buzz(unitIdx = undefined) {
-  if (!cur || state.phase !== 'reading') return;
+  if (!cur || cur.pending || state.phase !== 'reading') return;
   pauseReading();
   pendingBuzz = { unitIdx: unitIdx === undefined ? posNow() : unitIdx, ts: Date.now() };
   const el = eligible();
@@ -501,7 +513,7 @@ function applyVerdict(result, points = null) {
 // Player-row point buttons: during reading = buzz + verdict in one tap;
 // with a pending buzz = assign player + verdict; otherwise = adjustment.
 function directPoints(p, v) {
-  if (cur && state.phase === 'reading') {
+  if (cur && !cur.pending && state.phase === 'reading') {
     pauseReading();
     pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
     selPlayer = p;
@@ -531,8 +543,18 @@ document.addEventListener('keydown', e => {
       && document.activeElement.tagName !== 'INPUT'
       && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); buzz(); }
 });
+$('startbtn').onclick = startReading;
+$('restartbtn').onclick = () => {
+  // Replay the TTS from the top (missed audio, glitch). Buzz state and
+  // scores are untouched; the position clock rewinds with the audio.
+  if (!cur || cur.mode !== 'audio' || cur.pending) return;
+  player.el.currentTime = 0;
+  cur.unitIdx = 0;
+  renderProgress();
+  if (state.phase === 'reading' && !pendingBuzz) player.play().catch(() => degradeToReveal());
+};
 $('playbtn').onclick = () => {
-  if (!cur || state.phase !== 'reading') return;
+  if (!cur || cur.pending || state.phase !== 'reading') return;
   if (cur.mode === 'audio') { if (player.el.paused) player.resume(); else player.pause(); }
   if (cur.mode === 'reveal') {
     if (cur.timer) { clearTimeout(cur.timer); cur.timer = null; } else scheduleReveal();
@@ -587,19 +609,22 @@ function renderMain() {
     $('anspanel').innerHTML = '<span class="lbl">Answer</span> ' + (q.answer || '');
   }
 
-  $('progress').classList.toggle('hidden', cur.mode !== 'audio' || phase === 'done');
-  $('speedctl').classList.toggle('hidden', cur.mode !== 'reveal' || phase !== 'reading');
-  $('ratectl').classList.toggle('hidden', cur.mode !== 'audio' || phase !== 'reading');
-  $('playbtn').classList.toggle('hidden', hostReads || phase !== 'reading');
-  $('finishedbtn').classList.toggle('hidden', !hostReads || phase !== 'reading');
+  const pending = !!cur.pending;
+  $('startbtn').classList.toggle('hidden', !pending);
+  $('restartbtn').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase !== 'reading');
+  $('progress').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase === 'done');
+  $('speedctl').classList.toggle('hidden', pending || cur.mode !== 'reveal' || phase !== 'reading');
+  $('ratectl').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase !== 'reading');
+  $('playbtn').classList.toggle('hidden', pending || hostReads || phase !== 'reading');
+  $('finishedbtn').classList.toggle('hidden', pending || !hostReads || phase !== 'reading');
   $('finishedbtn').disabled = !!state.current?.readingFinished;
-  $('deadbtn').classList.toggle('hidden', phase === 'done' || phase === 'idle');
+  $('deadbtn').classList.toggle('hidden', pending || phase === 'done' || phase === 'idle');
   $('nextbtn').classList.toggle('hidden', !packet);
   $('nextbtn').disabled = false;
 
   // The buzz button: armed while reading (except full-text mode, where
   // clicking the buzzed word replaces it); red while adjudicating.
-  const armed = phase === 'reading' && !hostReads;
+  const armed = phase === 'reading' && !hostReads && !pending;
   $('buzz').classList.toggle('hidden', !(armed || pendingBuzz));
   $('buzz').classList.toggle('buzzed', !!pendingBuzz);
   $('buzz').textContent = pendingBuzz ? 'buzzed' : 'BUZZ (space)';
@@ -619,7 +644,9 @@ function renderMain() {
 function renderQText() {
   if (!cur) return;
   if (cur.mode === 'audio' && state.phase !== 'done') {
-    $('qtext').innerHTML = '<i class="faint">♪ Audio playing — text hidden so everyone can play.</i>';
+    $('qtext').innerHTML = cur.pending
+      ? '<i class="faint">♪ ready</i>'
+      : '<i class="faint">♪ Audio playing — text hidden so everyone can play.</i>';
     return;
   }
   const hostReads = cur.mode === 'text';
@@ -897,7 +924,7 @@ function renderPacketDone() {
   $('progress').classList.add('hidden');
   $('bonuspanel').classList.add('hidden');
   $('adjrow').classList.add('hidden');
-  for (const id of ['buzz', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn']) $(id).classList.add('hidden');
+  for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn']) $(id).classList.add('hidden');
   renderHeader(); renderScoring(); renderHistory();
   $('setsheet').classList.add('open');
 }
