@@ -191,6 +191,23 @@ function sendBuzz() {
 $('bigbuzz').onpointerdown = () => { if (buzzMode === 'press') sendBuzz(); };
 $('bigbuzz').onpointerup = () => { if (buzzMode === 'release') sendBuzz(); };
 
+// Desktop players buzz with Space; it follows the same press/release
+// toggle (keydown vs keyup). e.repeat guards a held key; inputs on the
+// join screen keep their spacebar.
+function keyGuard(e) {
+  if (e.code !== 'Space') return false;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return false;
+  e.preventDefault();
+  return true;
+}
+document.addEventListener('keydown', e => {
+  if (keyGuard(e) && !e.repeat && buzzMode === 'press') sendBuzz();
+});
+document.addEventListener('keyup', e => {
+  if (keyGuard(e) && buzzMode === 'release') sendBuzz();
+});
+
 function renderBuzz(buzzer) {
   const b = $('bigbuzz');
   if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
