@@ -348,6 +348,7 @@ async function nextQuestion() {
   if (mode === 'audio') {
     cur.mapper = await audio.positionMapper(q._id, units.length);
     player.load(q._id);
+    player.el.playbackRate = voiceRate();
     player.el.ontimeupdate = () => {
       if (!cur || state.phase !== 'reading') return;
       cur.unitIdx = cur.mapper(player.el.currentTime, player.el.duration);
@@ -385,6 +386,19 @@ $('wpmval').textContent = $('wpm').value;
 $('wpm').oninput = () => {
   $('wpmval').textContent = $('wpm').value;
   localStorage.qbmodWpm = $('wpm').value;
+};
+
+// TTS playback speed — the reader's vrate control: pitch-preserved
+// playbackRate, live mid-question. Reapplied after each load(): setting
+// src can reset playbackRate to the default.
+function voiceRate() { return Math.min(2, Math.max(0.5, +$('vrate').value || 0.95)); }
+try { player.el.preservesPitch = true; } catch (e) { /* older browsers */ }
+$('vrate').value = +localStorage.qbmodVrate || 0.95;
+$('vrateval').textContent = voiceRate().toFixed(2) + 'x';
+$('vrate').oninput = () => {
+  $('vrateval').textContent = voiceRate().toFixed(2) + 'x';
+  localStorage.qbmodVrate = $('vrate').value;
+  player.el.playbackRate = voiceRate();
 };
 
 function scheduleReveal() {
@@ -533,6 +547,7 @@ function renderMain() {
 
   $('progress').classList.toggle('hidden', cur.mode !== 'audio' || phase === 'done');
   $('speedctl').classList.toggle('hidden', cur.mode !== 'reveal' || phase !== 'reading');
+  $('ratectl').classList.toggle('hidden', cur.mode !== 'audio' || phase !== 'reading');
   $('playbtn').classList.toggle('hidden', hostReads || phase !== 'reading');
   $('finishedbtn').classList.toggle('hidden', !hostReads || phase !== 'reading');
   $('finishedbtn').disabled = !!state.current?.readingFinished;
