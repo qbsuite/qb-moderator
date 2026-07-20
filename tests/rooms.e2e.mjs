@@ -100,13 +100,60 @@ host.sendJson({ t: 'qlog', qlog: [{ label: 'TU 1', question: 'Who?', answer: 'X'
 await p2.next(m => m.t === 'qlog' && m.qlog.length === 1, 'p2 gets qlog');
 ok('qlog relay');
 
-// late joiner gets the stored snapshot + roster + qlog
+// --- audio broadcast (v1.1) ---
+// sync round-trip: server echoes {c, s} immediately, s is server now
+const c0 = Date.now();
+host.sendJson({ t: 'sync', c: c0 });
+const hs = await host.next(m => m.t === 'sync', 'host sync echo');
+if (hs.c !== c0 || typeof hs.s !== 'number') fail('bad host sync echo: ' + JSON.stringify(hs));
+p2.sendJson({ t: 'sync', c: 123 });
+const ps = await p2.next(m => m.t === 'sync', 'player sync echo');
+if (ps.c !== 123 || typeof ps.s !== 'number') fail('bad player sync echo: ' + JSON.stringify(ps));
+ok('sync round-trip (host + player)');
+
+// manifest: stored + broadcast to players
+host.sendJson({ t: 'audio_manifest', entries: [{ qid: 'q1', url: 'https://cdn/q1.opus' }] });
+const man = await p2.next(m => m.t === 'audio_manifest', 'p2 gets manifest');
+if (man.entries?.[0]?.qid !== 'q1') fail('bad manifest relay: ' + JSON.stringify(man));
+ok('audio_manifest relay');
+
+// player readiness relays to the host with the name attached
+p2.sendJson({ t: 'audio_ready', qid: 'q1' });
+const rdy = await host.next(m => m.t === 'audio_ready', 'host gets audio_ready');
+if (rdy.name !== 'Sam' || rdy.qid !== 'q1') fail('bad audio_ready relay: ' + JSON.stringify(rdy));
+ok('audio_ready relay');
+
+// scheduled start: stamped sv + at (= sv + 300) and echoed to EVERYONE,
+// the sending host included
+host.sendJson({ t: 'audio_start', qid: 'q1', pos: 0, rate: 1 });
+const [se, pe] = await Promise.all([
+  host.next(m => m.t === 'audio_start', 'host gets its own audio_start echo'),
+  p2.next(m => m.t === 'audio_start', 'p2 gets audio_start'),
+]);
+if (se.at - se.sv !== 300) fail('bad start stamping: ' + JSON.stringify(se));
+if (pe.at !== se.at) fail('host and player got different start instants');
+ok('audio_start scheduled + echoed to sender (at = sv + 300)');
+
+// plain anchors relay to players (not back to the sender)
+host.sendJson({ t: 'audio_pause', qid: 'q1', pos: 3.2 });
+const pp = await p2.next(m => m.t === 'audio_pause', 'p2 gets audio_pause');
+if (pp.pos !== 3.2 || typeof pp.sv !== 'number') fail('bad audio_pause relay: ' + JSON.stringify(pp));
+ok('audio_pause relay (sv-stamped)');
+
+// audio_resync relays to hosts with the name
+p2.sendJson({ t: 'audio_resync' });
+const rs = await host.next(m => m.t === 'audio_resync', 'host gets audio_resync');
+if (rs.name !== 'Sam') fail('bad audio_resync relay: ' + JSON.stringify(rs));
+ok('audio_resync relay');
+
+// late joiner gets the stored snapshot + roster + qlog + audio manifest
 const late = await connect(code, 'Late', 'player');
 const wl = await late.next(m => m.t === 'welcome', 'late welcome');
 if (wl.snapshot?.label !== 'TU 1') fail('late joiner missing snapshot');
 if (!wl.roster.some(r => r.name === 'Host' && r.role === 'host')) fail('roster missing host');
 if (!(wl.qlog && wl.qlog.length === 1 && wl.qlog[0].label === 'TU 1')) fail('late joiner missing qlog');
-ok('late-join snapshot + roster + qlog');
+if (wl.audioManifest?.[0]?.qid !== 'q1') fail('late joiner missing audio manifest');
+ok('late-join snapshot + roster + qlog + audio manifest');
 
 // leave fan-out
 p1.close();
@@ -148,7 +195,12 @@ for (let attempt = 1; attempt <= 3 && winName !== 'Slow'; attempt++) {
   // The host must hear about the FIRST arrival immediately (stop-reading
   // cue), before the arbitration window resolves.
   await host2.next(m => m.t === 'buzz_pending' && m.name === 'Fast', 'immediate pending notification #' + attempt);
-  if (attempt === 1) ok('host notified of first arrival before the window resolves');
+  if (attempt === 1) {
+    ok('host notified of first arrival before the window resolves');
+    // buzz_pending is broadcast (v1.1): phones pause audio on it too.
+    await slow.next(m => m.t === 'buzz_pending' && m.name === 'Fast', 'player also gets buzz_pending');
+    ok('players get buzz_pending (fast audio pause)');
+  }
   await sleep(25);
   slow.sendJson({ t: 'buzz' });
   const win = await host2.next(m => m.t === 'buzz', 'equalized winner #' + attempt, 8000);

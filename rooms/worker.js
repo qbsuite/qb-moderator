@@ -25,10 +25,34 @@
 //                  {t:'answer_result', name, result, prompt?}
 //   DO -> host   : {t:'answer', name, text} a player's typed answer
 //   DO -> player : {t:'ping', n, ts}       RTT probe (sent on join + each arm)
-//   DO -> host   : {t:'buzz_pending', name} FIRST arrival, sent the instant
-//                  the collection window opens — moderators stop reading on
-//                  this; the equalized winner ({t:'buzz'}) may differ and
-//                  follows at window close
+//   DO -> all    : {t:'buzz_pending', name} FIRST arrival, sent the instant
+//                  the collection window opens — moderators stop reading and
+//                  broadcasting phones pause audio on this; the equalized
+//                  winner ({t:'buzz'}) may differ and follows at window close
+//
+// Audio broadcast (additive, v1.1 — see SPEC.md): the host can stream
+// its TTS question audio to phones. Audio BYTES never transit the
+// worker (phones fetch the .opus from the qb-audio CDN themselves);
+// the DO's whole job is relaying small control messages and stamping
+// its clock on them so every client can schedule playback on server
+// time:
+//   any client -> DO : {t:'sync', c}   -> immediate {t:'sync', c, s}
+//                  echo (s = server now); clients derive offset =
+//                  serverClock − localClock, NTP-style
+//   host -> DO   : {t:'audio_manifest', entries} stored (like qlog) +
+//                  broadcast; welcome carries it to late joiners
+//                  {t:'audio_start'|'audio_resume', ...} stamped with
+//                  sv (server now) AND at = sv + AUDIO_LEAD_MS, then
+//                  broadcast to EVERYONE (host included — it schedules
+//                  its own playback at the same instant)
+//                  {t:'audio_pause'|'audio_rate'|'audio_stop'|
+//                   'audio_state', ...} stamped with sv, broadcast to
+//                  all but the sender
+//   player -> DO : {t:'audio_ready'|'audio_error', qid} and
+//                  {t:'audio_resync'} relayed to hosts with the
+//                  player's name attached
+// The DO never inspects audio payloads beyond stamping — the host owns
+// the ready gate, the clock, and all game meaning.
 //
 // Buzz arbitration is LATENCY-EQUALIZED: the first buzz while armed opens
 // a short collection window (sized to the slowest connected player's
@@ -98,6 +122,11 @@ const RTT_SAMPLES = 8;      // per-player samples kept (median is used)
 const MAX_COMP_MS = 100;    // cap on arrival backdating (= RTT/2 cap)
 const MAX_WINDOW_MS = 200;  // cap on the buzz collection window
 
+// Scheduled audio starts land this far in the server's future — above
+// the buzz-window cap and any sane one-way latency, so every phone's
+// scheduled instant is still ahead of it when the message arrives.
+const AUDIO_LEAD_MS = 300;
+
 export class RoomDO {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -144,14 +173,16 @@ export class RoomDO {
     this.ctx.acceptWebSocket(server, [role]);
     server.serializeAttachment({ name, role });
 
-    const [snapshot, armed, qlog] = await Promise.all([
+    const [snapshot, armed, qlog, audioManifest] = await Promise.all([
       this.ctx.storage.get('snapshot'),
       this.ctx.storage.get('armed'),
       this.ctx.storage.get('qlog'),
+      this.ctx.storage.get('audio_manifest'),
     ]);
     server.send(JSON.stringify({
       t: 'welcome', snapshot: snapshot ?? null, armed: !!armed,
       qlog: qlog ?? [], roster: this.roster(),
+      audioManifest: audioManifest ?? null,
     }));
     this.broadcast({ t: 'join', name, role }, server);
     this.pingSocket(server); // first RTT sample right away
@@ -265,6 +296,17 @@ export class RoomDO {
         this.sendToHosts({ t: 'answer', name: att.name, text: String(msg.text ?? '').slice(0, 300) });
         return;
       }
+      if (msg.t === 'sync') {
+        // Clock-offset probe: echo immediately with the server stamp.
+        try { ws.send(JSON.stringify({ t: 'sync', c: msg.c, s: Date.now() })); } catch (e) { /* closing */ }
+        return;
+      }
+      if (msg.t === 'audio_ready' || msg.t === 'audio_error' || msg.t === 'audio_resync') {
+        // Audio-broadcast player signals: pure relays, name attached
+        // (same pattern as 'answer'); the host owns the ready gate.
+        this.sendToHosts({ t: msg.t, name: att.name, qid: msg.qid ?? null });
+        return;
+      }
       if (msg.t !== 'buzz') return;
       const now = Date.now();
       if (this.pending) {
@@ -280,9 +322,11 @@ export class RoomDO {
       if (!armed) { ws.send(JSON.stringify({ t: 'rejected' })); return; }
       await this.ctx.storage.put('armed', false);
       this.pending = [{ ws, name: att.name, adj: now - this.compOf(att) }];
-      // Hosts hear about the FIRST arrival immediately (the moderator must
-      // stop reading now); the equalized winner follows at window close.
-      this.sendToHosts({ t: 'buzz_pending', name: att.name });
+      // Everyone hears about the FIRST arrival immediately — the
+      // moderator must stop reading now, and broadcasting phones pause
+      // their audio on the same signal (no host round trip, no lag
+      // compensation); the equalized winner follows at window close.
+      this.broadcast({ t: 'buzz_pending', name: att.name });
       setTimeout(() => this.resolveBuzz(), this.buzzWindow());
       return;
     }
@@ -310,6 +354,23 @@ export class RoomDO {
       // browse what was read; stored for late joiners.
       await this.ctx.storage.put('qlog', msg.qlog ?? []);
       this.broadcast({ t: 'qlog', qlog: msg.qlog ?? [] }, ws);
+    } else if (msg.t === 'sync') {
+      try { ws.send(JSON.stringify({ t: 'sync', c: msg.c, s: Date.now() })); } catch (e) { /* closing */ }
+    } else if (msg.t === 'audio_manifest') {
+      // The packet's audio list (qids + CDN urls): stored like the qlog
+      // so welcome hands it to late joiners, never inspected.
+      await this.ctx.storage.put('audio_manifest', msg.entries ?? []);
+      this.broadcast({ t: 'audio_manifest', entries: msg.entries ?? [] }, ws);
+    } else if (typeof msg.t === 'string' && msg.t.startsWith('audio_')) {
+      // Audio control relay: stamp the server clock so clients can
+      // convert to local time. Scheduled messages (start/resume) get a
+      // start instant in the near future and go to EVERYONE — the host
+      // schedules its own playback from the echo, so all clocks anchor
+      // to the same server instant.
+      const out = { ...msg, sv: Date.now() };
+      const scheduled = msg.t === 'audio_start' || msg.t === 'audio_resume';
+      if (scheduled) out.at = out.sv + AUDIO_LEAD_MS;
+      this.broadcast(out, scheduled ? null : ws);
     }
   }
 

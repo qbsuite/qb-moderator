@@ -35,6 +35,12 @@ One device, one host. Working today:
   server-side), the host adjudicates as usual. The room server is a
   tiny self-hostable Cloudflare Worker (`rooms/`, free plan) with a
   default instance provided.
+- **Online play — audio on every phone**: with the ⚙ Broadcast setting
+  on, phones play the TTS audio too. Each phone downloads the packet's
+  audio straight from the CDN (bytes never touch the room server) and
+  every question starts on a shared server-clock instant, so all
+  devices begin together; a buzz pauses every phone the moment the
+  server sees it. Off by default — in-person rooms stay silent.
 
 Roadmap (SPEC.md + the design doc): **voice mode** (physical-buzzer
 sound detection + speech-to-text answers), remote text-reveal rooms.

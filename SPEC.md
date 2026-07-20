@@ -92,7 +92,9 @@ the question deads when every player is locked after reading finishes.
   sidecars. Falls back to `reveal` when a qid has no audio (never to
   full text — no spoilers). A ⟲ button replays the audio from the top
   (missed/glitched playback); scores, lockouts, and the engine are
-  untouched — only the position clock rewinds with it.
+  untouched — only the position clock rewinds with it. With a room and
+  the Broadcast setting on, phones play the same files, started on a
+  shared server-clock instant (see Room protocol → Audio broadcast).
 - Every question loads into a **ready state** first (audio pre-buffered,
   room buzzers closed). Only the first question of a freshly loaded
   packet waits for the host's Start button; Next starts reading the
@@ -232,6 +234,61 @@ for late joiners.
 - Live protocol test: `node tests/rooms.e2e.mjs` (not in CI — hits the
   deployed instance).
 
+### Audio broadcast (v1.1, additive — online play)
+
+With the **Broadcast TTS audio to phones** setting on (off by default;
+in-person rooms stay silent), phones play the same qb-audio files as
+the host. Design rules:
+
+- **Audio bytes never transit the worker.** The host ships an
+  `{t:'audio_manifest', entries: [{qid, url}]}` once per packet load
+  (stored by the DO like the qlog; `welcome` carries it to late
+  joiners); each phone downloads every `.opus` straight from the
+  qb-audio CDN (2 at a time, into blob URLs) and reports
+  `{t:'audio_ready'|'audio_error', qid}` per file — relayed to hosts
+  with the player's name. The DO relays small control JSON only.
+- **Clock sync**: any client sends `{t:'sync', c}` and the DO echoes
+  `{t:'sync', c, s}` immediately (`s` = server now); clients keep the
+  last 8 samples and use the min-RTT one's NTP-style offset
+  (`app/sync.js`, pure + unit-tested, shared by host and player as a
+  classic-script global like reveal_units). Burst of 3 on every socket
+  open. Clients with no reply fall back to a coarse offset from the
+  first stamped relay.
+- **Scheduled start (the strict global-begin handshake)**: the host's
+  Start/Next waits on a **ready gate** — every connected player has
+  resolved (downloaded or failed) the question's audio, or a 4s
+  deadline passes (stragglers get a roster mark, the game proceeds).
+  It then sends `{t:'audio_start', qid, pos, rate}`; the DO stamps
+  `sv` (server now) and `at = sv + AUDIO_LEAD_MS (300ms)` and
+  broadcasts to EVERYONE — **the host included**, which schedules its
+  own playback (and `question_start`, hence the buzzer arm) off the
+  echo, so all devices begin at the same server instant. Late
+  arrivals start immediately, seeked forward by the overshoot ×
+  playbackRate. A host that never sees its echo (old worker) starts
+  locally after 1s — exactly the pre-broadcast behavior.
+- **Event-anchored, no heartbeat**: phones re-anchor only on
+  `audio_pause` / `audio_resume` (scheduled like start) /
+  `audio_rate` (rate + position in one anchor) / `audio_stop` /
+  `audio_state {qid, playing, pos, rate, for?}` — every anchor carries
+  the host's authoritative `currentTime` as `pos` (`t` is the message
+  type key on the wire). The host element stays the buzz-position
+  clock; nothing about position mapping changed. A phone that
+  (re)joins mid-question sends `{t:'audio_resync'}` after `welcome`
+  and gets a targeted `audio_state {for: name}` back.
+- **Fast pause**: `{t:'buzz_pending', name}` is now **broadcast to
+  everyone** (was hosts-only) — phones pause the instant the buzz
+  window opens, skipping the host round trip, and the buzzer's own
+  phone pauses optimistically on send. The host's `audio_pause`
+  follows purely to re-pin the exact position; a voided buzz (winner
+  locked out) is corrected by the host's scheduled `audio_resume`.
+  Phones never resume on `rejected`.
+- **Deployment order**: the worker must deploy before the app — the
+  old worker silently drops unknown host messages, which the host
+  fallback timers turn back into local-only (today's) behavior.
+- Unlock: the phone's Join tap creates and primes the shared Audio
+  element (autoplay policy); a per-phone 🔊/🔇 mute toggle covers
+  players sitting in the same room as the host.
+
 **Second consumer — consensus-scorekeeper** (July 2026,
 github.com/consensus-scorekeeper): the Consensus trivia scorekeeper runs
 its phone-buzzer rooms against the same default instance and vendors
@@ -239,7 +296,10 @@ its phone-buzzer rooms against the same default instance and vendors
 test against this checkout). The wire protocol above and `app/room.js`'s
 exported API (`DEFAULT_SERVER`, `createRoom`, `connectHost`, the handle's
 `playerUrl`/`send`/`close`) are therefore **frozen** — changes must be
-backward-compatible and land here first. Note the DO never inspects
+backward-compatible and land here first. (July 2026, additive: an
+optional `onMessage(m)` handler receives messages no named branch
+consumed — the audio-broadcast traffic arrives there; consensus should
+re-vendor at its convenience, older copies keep working.) Note the DO never inspects
 `snapshot` or `qlog` payloads: each consumer defines its own shapes
 (qb-moderator's are described above; consensus renders its scoreboard
 snapshot), so the shared instance serves both without coordination.

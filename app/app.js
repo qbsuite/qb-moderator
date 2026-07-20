@@ -20,6 +20,7 @@ import * as audio from './audio.js';
 import { createRoom, connectHost } from './room.js';
 
 const { questionUnits, slowSpans, SLOW_FACTOR } = globalThis.qbRevealUnits;
+const qbSync = globalThis.qbSync;
 
 const QDATA_BASE = 'https://pub-b5f94e8d4cc648abb0e35b7ca4444c65.r2.dev';
 
@@ -47,6 +48,50 @@ let earlyAnswer = null;    // {name, text} typed before the buzz window resolved
 let review = null;         // {idx} when browsing a previous question
 const connected = new Set();  // player names currently connected via the room
 const qlog = [];           // completed questions [{qid, label, question, answer, summary}]
+
+// ---- audio broadcast (host side; SPEC.md audio broadcast section) ----
+// With the Broadcast setting on, phones play the same qb-audio files,
+// fetched straight from the CDN (never through the worker) and started
+// on a server-clock instant so every device begins together. The host
+// stays the authoritative clock: buzz positions still come from the
+// host's audio element, and every anchor message (start/pause/resume/
+// rate/state) carries its currentTime.
+let syncSamples = [];      // host's clock-offset samples ({rtt, offset})
+const audioResolved = new Map();  // player name -> Set(qid) downloaded OR failed
+const audioFailed = new Map();    // player name -> Set(qid) failed only (roster mark)
+let audioGate = null;      // {qid, deadline, timer} start gate for the current question
+let bcastFallback = null;  // start/resume locally if the worker never echoes (old worker)
+
+const broadcasting = () =>
+  !!(room && $('optBroadcast').checked && cur && cur.mode === 'audio');
+
+const hostOffset = () => qbSync.bestOffset(syncSamples) ?? 0;
+
+function clearBcastTimers() {
+  if (bcastFallback) { clearTimeout(bcastFallback); bcastFallback = null; }
+  if (audioGate) { clearTimeout(audioGate.timer); audioGate = null; }
+}
+
+// The packet's audio list. Sent on packet load, host (re)connect, and
+// toggle-on, so phones can download everything up front; per-question
+// traffic is then just start/pause/resume anchors.
+function sendAudioManifest() {
+  if (!room || !$('optBroadcast').checked || !packet) return;
+  const entries = packet.tossups
+    .filter(t => audio.hasAudio(t._id))
+    .map(t => ({ qid: t._id, url: audio.audioUrl(t._id) }));
+  room.send({ t: 'audio_manifest', entries });
+}
+
+// The audio-position wire field is `pos` (seconds) — `t` is taken by
+// the message type across the whole protocol.
+function buildAudioState(forName) {
+  const playing = state.phase === 'reading' && !player.el.paused && !cur.pending && !pendingBuzz;
+  const msg = { t: 'audio_state', qid: cur.q._id, playing,
+                pos: player.el.currentTime, rate: voiceRate() };
+  if (forName) msg.for = forName;
+  return msg;
+}
 
 function dispatch(ev) { apply(ev); render(); }
 
@@ -99,6 +144,7 @@ function undo() {
   if (room) { roomArmed = null; room.send({ t: 'qlog', qlog }); }
   $('bonuspanel').dataset.for = '';      // rebuild from the restored progress
   $('setsheet').classList.remove('open');
+  if (cur) cur.starting = false;   // any in-flight start gate died with stopClocks
   if (cur && cur.mode === 'audio') {
     // Reading resumes paused at the snapshot position (play/⟲ to go on).
     if (player.el.src && player.el.src.includes(cur.q._id)) {
@@ -110,6 +156,11 @@ function undo() {
       player.el.onerror = () => degradeToReveal();
       const t = s.audioTime;
       player.el.addEventListener('loadedmetadata', () => { player.el.currentTime = t; }, { once: true });
+    }
+    // Phones re-anchor to the restored (paused) position.
+    if (broadcasting() && !cur.pending) {
+      room.send({ t: 'audio_state', qid: cur.q._id, playing: false,
+                  pos: s.audioTime, rate: voiceRate() });
     }
   }
   render();
@@ -141,8 +192,15 @@ $('roombtn').onclick = async () => {
       onOpen: () => {   // resync after (re)connect
         roomArmed = null;
         room.send({ t: 'qlog', qlog });
+        // Audio broadcast recovery: the DO holds no audio state beyond
+        // the manifest, so re-seed the clock samples, the manifest, and
+        // (mid-question) the phones' position.
+        for (let i = 0; i < 3; i++) setTimeout(() => room && room.send({ t: 'sync', c: Date.now() }), i * 150);
+        sendAudioManifest();
+        if (broadcasting() && !cur.pending) room.send(buildAudioState());
         render();
       },
+      onMessage: handleRoomAudioMessage,
     });
     $('roombtn').textContent = '🌐 ' + code;
     $('roombtn').title = 'Click to copy the player join link';
@@ -199,6 +257,64 @@ function handleRemoteBuzz(name) {
   pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
   selPlayer = name;
   render();
+}
+
+// Audio-broadcast control traffic (everything room.js's named handlers
+// don't consume). The host aggregates phone readiness for the start
+// gate, and schedules its OWN playback off the server-stamped echoes of
+// its start/resume messages — so host and phones anchor to the same
+// server instant instead of the host leading by its send latency.
+function handleRoomAudioMessage(m) {
+  if (m.t === 'sync') {
+    syncSamples.push(qbSync.sampleFromExchange(m.c, m.s, Date.now()));
+    if (syncSamples.length > 8) syncSamples.shift();
+    return;
+  }
+  if (m.t === 'audio_ready' || m.t === 'audio_error') {
+    if (!m.name || !m.qid) return;
+    if (!audioResolved.has(m.name)) audioResolved.set(m.name, new Set());
+    audioResolved.get(m.name).add(m.qid);
+    if (m.t === 'audio_error') {
+      if (!audioFailed.has(m.name)) audioFailed.set(m.name, new Set());
+      audioFailed.get(m.name).add(m.qid);
+    }
+    checkAudioGate();
+    renderScoring();
+    return;
+  }
+  if (m.t === 'audio_resync') {
+    // A phone (re)joined mid-stream: hand it the current position.
+    if (m.name && broadcasting() && !cur.pending) room.send(buildAudioState(m.name));
+    return;
+  }
+  if (m.t === 'audio_start' || m.t === 'audio_resume') {
+    // Echo of our own scheduled message, stamped with the start instant.
+    if (bcastFallback) { clearTimeout(bcastFallback); bcastFallback = null; }
+    if (!cur || m.qid !== cur.q._id || pendingBuzz) return;
+    const d = Math.max(0, qbSync.playDelay(m.at, hostOffset(), Date.now()));
+    if (m.t === 'audio_start') setTimeout(() => beginReading(m.qid), d);
+    else setTimeout(() => {
+      if (cur && cur.q._id === m.qid && state.phase === 'reading' && !pendingBuzz) player.resume();
+    }, d);
+  }
+}
+
+// Per-question start gate: fire once every connected phone has resolved
+// (downloaded or failed) the question's audio, or the deadline passes.
+// Empty rooms resolve instantly; stragglers get marked in the roster.
+function checkAudioGate() {
+  if (!audioGate) return;
+  const resolvedFor = new Set(
+    [...connected].filter(n => audioResolved.get(n)?.has(audioGate.qid)));
+  if (!qbSync.gateResolved([...connected], resolvedFor, audioGate.deadline, Date.now())) return;
+  const { qid } = audioGate;
+  clearTimeout(audioGate.timer);
+  audioGate = null;
+  if (!cur || cur.q._id !== qid || !cur.pending) return;
+  room.send({ t: 'audio_start', qid, pos: 0, rate: voiceRate() });
+  // Old worker (no audio relay): no echo will come — start locally so
+  // the host degrades to exactly the pre-broadcast behavior.
+  bcastFallback = setTimeout(() => { bcastFallback = null; beginReading(qid); }, 1000);
 }
 
 // A player typed an answer on their phone. Run the checker: accept /
@@ -335,6 +451,7 @@ $('loadbtn').onclick = () => {
   packet = SET.packets[+$('packetpick').value];
   packetLabel = 'Packet ' + (packet.number ?? +$('packetpick').value + 1);
   tuIdx = -1;
+  sendAudioManifest();   // phones start downloading the whole packet now
   $('setsheet').classList.remove('open');
   nextQuestion();
 };
@@ -418,6 +535,15 @@ $('optBonuses').onchange = render;
 $('optChecker').onchange = render;
 $('optBonusReveal').value = localStorage.qbmodBonusAns || 'auto';
 $('optBonusReveal').onchange = () => { localStorage.qbmodBonusAns = $('optBonusReveal').value; };
+// Broadcast TTS to phones: off by default — in-person rooms must stay
+// silent. Toggling on mid-packet ships the manifest so phones can catch
+// up; toggling off mid-question silences them.
+$('optBroadcast').checked = localStorage.qbmodBroadcast === '1';
+$('optBroadcast').onchange = () => {
+  localStorage.qbmodBroadcast = $('optBroadcast').checked ? '1' : '0';
+  if ($('optBroadcast').checked) sendAudioManifest();
+  else if (room && cur && cur.mode === 'audio') room.send({ t: 'audio_stop', qid: cur.q._id });
+};
 
 // ---------- question flow ----------
 function summarize(qid) {
@@ -488,8 +614,29 @@ async function nextQuestion(autoStart) {
 }
 
 function startReading(withUndo) {
-  if (!cur || !cur.pending) return;
+  if (!cur || !cur.pending || cur.starting) return;
   if (withUndo !== false) pushUndo();
+  if (broadcasting()) {
+    // Scheduled start: wait for every phone's download (or the 4s
+    // deadline), send audio_start, and begin on the server-stamped
+    // echo — question_start (and so the buzzer arm) lands at the same
+    // instant the audio actually starts everywhere.
+    cur.starting = true;
+    audioGate = { qid: cur.q._id, deadline: Date.now() + 4000 };
+    audioGate.timer = setTimeout(checkAudioGate, 4000);
+    checkAudioGate();
+    render();
+    return;
+  }
+  beginReading(cur.q._id);
+}
+
+// The actual start (old startReading body). In broadcast mode this runs
+// at the scheduled instant (or the no-echo fallback); qid guards
+// against the question changing while a start was in flight.
+function beginReading(qid) {
+  if (!cur || !cur.pending || (qid && cur.q._id !== qid)) return;
+  cur.starting = false;
   cur.pending = false;
   dispatch({ type: 'question_start', qid: cur.q._id, powerIdx: cur.powerIdx,
              superpowerIdx: cur.superpowerIdx, unitCount: cur.units.length });
@@ -509,10 +656,18 @@ function startReading(withUndo) {
 
 function degradeToReveal() {
   if (!cur || cur.mode !== 'audio') return;
+  // Host audio died = the room's clock died: silence the phones too.
+  if (broadcasting() && (!cur.pending || cur.starting)) {
+    room.send({ t: 'audio_stop', qid: cur.q._id });
+  }
+  clearBcastTimers();
+  const wasStarting = cur.starting;
+  cur.starting = false;
   cur.mode = 'reveal'; cur.degraded = true;
   cur.unitIdx = 0;
   cur.slow = slowSpans(cur.units.map(u => u.t));
   if (!cur.pending) scheduleReveal();   // pre-Start failures wait for Start
+  else if (wasStarting) beginReading(cur.q._id);   // mid-gate failure: reveal now
   render();
 }
 
@@ -543,6 +698,11 @@ $('vrate').oninput = () => {
   $('vrateval').textContent = voiceRate().toFixed(2) + 'x';
   localStorage.qbmodVrate = $('vrate').value;
   player.el.playbackRate = voiceRate();
+  // Rate + position in one anchor so phones re-derive their clocks.
+  if (broadcasting() && !cur.pending) {
+    room.send({ t: 'audio_rate', qid: cur.q._id, pos: player.el.currentTime,
+                rate: voiceRate(), playing: state.phase === 'reading' && !player.el.paused });
+  }
 };
 
 function scheduleReveal() {
@@ -562,17 +722,44 @@ function scheduleReveal() {
 
 function pauseReading() {
   if (!cur) return;
-  if (cur.mode === 'audio') player.pause();
+  if (cur.mode === 'audio') {
+    player.pause();
+    // The phones already paused on the broadcast buzz_pending (or their
+    // own optimistic buzz) — this anchor just re-pins the exact position.
+    if (broadcasting() && !cur.pending) {
+      if (bcastFallback) { clearTimeout(bcastFallback); bcastFallback = null; }
+      room.send({ t: 'audio_pause', qid: cur.q._id, pos: player.el.currentTime });
+    }
+  }
   if (cur.mode === 'reveal') clearTimeout(cur.timer);
 }
 
 function resumeReading() {
   if (!cur || state.phase !== 'reading') return;
-  if (cur.mode === 'audio') player.resume();
+  if (cur.mode === 'audio') {
+    if (broadcasting()) {
+      // Scheduled, like the start: everyone (host included) resumes at
+      // the server-stamped instant from the echo; the fallback covers a
+      // worker without the audio relay.
+      if (bcastFallback) clearTimeout(bcastFallback);
+      room.send({ t: 'audio_resume', qid: cur.q._id, pos: player.el.currentTime, rate: voiceRate() });
+      bcastFallback = setTimeout(() => {
+        bcastFallback = null;
+        if (cur && state.phase === 'reading' && !pendingBuzz) player.resume();
+      }, 1000);
+    } else player.resume();
+  }
   if (cur.mode === 'reveal') scheduleReveal();
 }
 
 function stopClocks() {
+  // Leaving the question with phone audio live (or a start in flight):
+  // silence the room before the local teardown.
+  if (broadcasting() && (!cur.pending || cur.starting)) {
+    room.send({ t: 'audio_stop', qid: cur.q._id });
+  }
+  clearBcastTimers();
+  if (cur) cur.starting = false;
   player.stop();
   if (cur) clearTimeout(cur.timer);
 }
@@ -670,11 +857,25 @@ $('restartbtn').onclick = () => {
   player.el.currentTime = 0;
   cur.unitIdx = 0;
   renderProgress();
-  if (state.phase === 'reading' && !pendingBuzz) player.play().catch(() => degradeToReveal());
+  if (state.phase === 'reading' && !pendingBuzz) {
+    if (broadcasting()) {
+      // Restart is just a resume from 0, scheduled like any other.
+      player.pause();
+      if (bcastFallback) clearTimeout(bcastFallback);
+      room.send({ t: 'audio_resume', qid: cur.q._id, pos: 0, rate: voiceRate() });
+      bcastFallback = setTimeout(() => {
+        bcastFallback = null;
+        player.play().catch(() => degradeToReveal());
+      }, 1000);
+    } else player.play().catch(() => degradeToReveal());
+  }
 };
 $('playbtn').onclick = () => {
   if (!cur || cur.pending || state.phase !== 'reading') return;
-  if (cur.mode === 'audio') { if (player.el.paused) player.resume(); else player.pause(); }
+  if (cur.mode === 'audio') {
+    // Through pause/resumeReading so the room hears about it too.
+    if (player.el.paused) resumeReading(); else pauseReading();
+  }
   if (cur.mode === 'reveal') {
     if (cur.timer) { clearTimeout(cur.timer); cur.timer = null; } else scheduleReveal();
   }
@@ -728,7 +929,9 @@ function renderMain() {
   $('modeline').innerHTML =
     cur.degraded ? '<span class="warn">⚠ audio failed for this question — revealing text</span>'
     : cur.noAudio ? '<span class="warn">⚠ no TTS audio for this question — revealing text</span>'
+    : cur.starting ? '♪ syncing phones…'
     : cur.mode === 'audio' ? '♪ reading aloud — text hidden until the end'
+      + (broadcasting() ? ' · phones hear it too' : '')
     : cur.mode === 'reveal' ? 'word-by-word reveal'
     : 'full text — you read';
 
@@ -742,6 +945,7 @@ function renderMain() {
 
   const pending = !!cur.pending;
   $('startbtn').classList.toggle('hidden', !pending);
+  $('startbtn').disabled = !!cur.starting;
   $('restartbtn').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase !== 'reading');
   $('progress').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase === 'done');
   $('speedctl').classList.toggle('hidden', pending || cur.mode !== 'reveal' || phase !== 'reading');
@@ -1068,15 +1272,22 @@ function renderScoring() {
       ? `<div class="teamhead"><span class="tname unassigned">Players</span>${teamList.length ? '' : ''}</div>`
       : `<div class="teamhead"><span class="tname" data-team="${esc(col.team)}">${esc(col.team)}</span><span class="tscore">${tTotals[col.team] ?? 0}</span>${
           tb && tb.heard ? `<span class="tbonus" title="bonus points · ppb">bonus +${tb.points} · ppb ${tb.ppb.toFixed(1)}</span>` : ''}</div>`;
+    const bcastQid = broadcasting() ? cur.q._id : null;
     const rows = col.players.map(p => {
       const locked = lockouts.includes(p);
       const offline = room && !connected.has(p);
+      const amark = !bcastQid || offline ? ''
+        : audioFailed.get(p)?.has(bcastQid)
+          ? ' <span class="bad" title="audio failed on this phone — they can still buzz">♪✗</span>'
+        : !audioResolved.get(p)?.has(bcastQid)
+          ? ' <span class="faint" title="audio still downloading on this phone">♪…</span>'
+        : '';
       const st = tstats[p] || { powers: 0, gets: 0, negs: 0 };
       const pb = !state.teams[p] && bstats.players[p];
       return `<div class="prow ${locked ? 'locked' : ''} ${p === selPlayer ? 'droptarget' : ''}" data-p="${esc(p)}">
         <span class="handle">≡</span>
         <span class="pname" data-p="${esc(p)}">${esc(p)}${offline
-          ? ' <span class="faint" title="not connected to the room">○</span>' : ''}</span>
+          ? ' <span class="faint" title="not connected to the room">○</span>' : ''}${amark}</span>
         <span class="pstat" title="powers/gets/negs">${st.powers}/${st.gets}/${st.negs}${
           pb && pb.heard ? ` · ppb ${pb.ppb.toFixed(1)}` : ''}</span>
         <span class="pscore">${totals[p] ?? 0}</span>

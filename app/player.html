@@ -35,7 +35,7 @@
     border-bottom: 1px solid var(--border); }
   #topline b { color: var(--bright); letter-spacing: 0.15em; }
   #conn { margin-left: auto; }
-  #buzzmode { background: var(--input); color: var(--muted); border: 1px solid var(--border);
+  #buzzmode, #mutebtn { background: var(--input); color: var(--muted); border: 1px solid var(--border);
     border-radius: 6px; font-size: 0.78rem; padding: 0.1rem 0.5rem; cursor: pointer; }
 
   #answerbar { display: none; padding: 0.7rem 1rem 0; }
@@ -96,6 +96,8 @@
     <div id="topline">
       <b id="roomcode"></b>
       <span class="muted" id="qlabel"></span>
+      <span class="muted" id="audiostat"></span>
+      <button id="mutebtn" style="display:none" title="Mute the broadcast audio on this phone"></button>
       <button id="buzzmode" title="When your buzz fires: the instant you touch the button, or when you let go"></button>
       <span class="muted" id="conn">●</span>
     </div>
@@ -111,10 +113,12 @@
     <div id="pastq"></div>
   </div>
 
+<script src="sync.js"></script>
 <script>
 (() => {
 'use strict';
 const DEFAULT_SERVER = 'https://qb-rooms.denisliu10.workers.dev';
+const qbSync = globalThis.qbSync;
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const params = new URLSearchParams(location.search);
@@ -126,6 +130,23 @@ let ws = null, me = '', code = '', armed = false, mineBuzz = false, closed = fal
 let sentBuzz = false; // optimistic: our buzz is in flight, verdict pending
 let snapshot = null, qlog = [];
 
+// ---- audio broadcast (SPEC.md, additive v1.1) ----
+// The host can stream its TTS audio here. This phone downloads the
+// whole packet's .opus files straight from the qb-audio CDN (the room
+// server only carries control messages), then plays the one the host's
+// audio_start/resume names, scheduled on the server clock so every
+// device starts together.
+let aEl = null;              // shared Audio element, created inside the Join tap (autoplay unlock)
+let manifest = [];           // [{qid, url}] for the current packet
+let blobs = new Map();       // qid -> object URL (fully downloaded)
+let failed = new Set();      // qids whose download failed
+let fetching = new Set();    // qids being downloaded right now
+let curQid = null;           // qid loaded into aEl
+let playTimer = null;        // pending scheduled play()
+let syncSamples = [];        // completed {rtt, offset} sync exchanges
+let coarseOffset = null;     // fallback offset from stamped relays (no sync replies)
+let muted = localStorage.qbmodPlayerMute === '1';
+
 $('joinbtn').onclick = join;
 $('code').oninput = () => { $('code').value = $('code').value.toUpperCase(); };
 
@@ -135,7 +156,22 @@ function join() {
   if (!/^[A-Z2-9]{4}$/.test(code)) { $('joinerr').textContent = 'Enter the 4-letter room code.'; return; }
   if (!me) { $('joinerr').textContent = 'Enter your name.'; return; }
   localStorage.qbmodName = me;
+  unlockAudio();   // the Join tap is the user gesture autoplay policies need
   connect();
+}
+
+// Create the one shared Audio element inside a user gesture and play a
+// beat of silence through it — after this, programmatic play() on the
+// SAME element works for the rest of the session (iOS/Android policy).
+function unlockAudio() {
+  if (aEl) return;
+  aEl = new Audio();
+  try { aEl.preservesPitch = true; } catch (e) { /* older browsers */ }
+  aEl.muted = muted;
+  // One silent sample, WAV, inline.
+  aEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+  aEl.play().catch(() => {});
+  renderMute();
 }
 
 function connect() {
@@ -149,25 +185,60 @@ function connect() {
     $('conn').textContent = '●';
     $('conn').className = 'good';
     keepAwake();
+    syncBurst();
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+    // Coarse clock fallback: a stamped relay bounds the server clock to
+    // within one-way latency, useful only until a real sync reply lands.
+    if (m.sv != null && coarseOffset === null) coarseOffset = m.sv - Date.now();
     // Echo RTT probes immediately (first, before any rendering) — the
     // server's latency-equalized buzz arbitration depends on them.
     if (m.t === 'ping') { try { ws.send(JSON.stringify({ t: 'pong', n: m.n, ts: m.ts })); } catch (err) {} return; }
-    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false; answerBar(null); renderAll(); renderPast(); }
+    if (m.t === 'welcome') {
+      armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false;
+      answerBar(null); renderAll(); renderPast();
+      if (m.audioManifest) setManifest(m.audioManifest);
+      // Mid-question (re)connects learn the current audio position from
+      // the host's targeted audio_state reply — there is no heartbeat.
+      send({ t: 'audio_resync' });
+    }
     else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
     else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; answerBar(null); vibrate(40); renderBuzz(); }
     else if (m.t === 'disarm') { armed = false; sentBuzz = false; renderBuzz(); }
+    else if (m.t === 'buzz_pending') {
+      // First arrival at the server: pause NOW, same instant the host
+      // hears it — no lag compensation, no host round trip. The host's
+      // audio_pause follows and re-anchors the exact position.
+      audioPause();
+    }
     else if (m.t === 'buzz') {
       armed = false;
       sentBuzz = false;
+      audioPause();   // belt over buzz_pending's suspenders
       if (m.name === me) {
         mineBuzz = true; vibrate([60, 40, 60]);
         $('answer').value = '';
         answerBar('input');
       }
       renderBuzz(m.name);
+    }
+    else if (m.t === 'sync') {
+      syncSamples.push(qbSync.sampleFromExchange(m.c, m.s, Date.now()));
+      if (syncSamples.length > 8) syncSamples.shift();
+    }
+    else if (m.t === 'audio_manifest') setManifest(m.entries || []);
+    else if (m.t === 'audio_start' || m.t === 'audio_resume') handleAudioPlay(m);
+    else if (m.t === 'audio_pause') { audioPause(); if (m.qid === curQid) seekTo(m.pos); }
+    else if (m.t === 'audio_rate') {
+      if (m.qid !== curQid || !aEl) return;
+      aEl.playbackRate = m.rate;
+      seekTo(qbSync.anchorTarget(m, offset(), Date.now()));
+    }
+    else if (m.t === 'audio_stop') audioStop();
+    else if (m.t === 'audio_state') {
+      if (m.for && m.for !== me) return;
+      handleAudioState(m);
     }
     else if (m.t === 'answer_result' && m.name === me) {
       if (m.result === 'prompt') {
@@ -192,6 +263,157 @@ function connect() {
 }
 
 function vibrate(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+function send(obj) {
+  if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (e) {} }
+}
+
+// ---- audio broadcast internals ----
+
+const offset = () => {
+  const o = qbSync.bestOffset(syncSamples);
+  return o !== null ? o : (coarseOffset !== null ? coarseOffset : 0);
+};
+
+function syncBurst() {
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => send({ t: 'sync', c: Date.now() }), i * 150);
+  }
+}
+
+// Download every file in the manifest (2 at a time) into object URLs;
+// report each qid to the host as it resolves — that feeds the host's
+// per-question start gate. Re-sent manifests only fetch what's new.
+function setManifest(entries) {
+  manifest = entries || [];
+  const keep = new Set(manifest.map(e => e.qid));
+  for (const [qid, url] of blobs) {
+    if (!keep.has(qid)) { URL.revokeObjectURL(url); blobs.delete(qid); }
+  }
+  pumpDownloads();
+  renderAudioStat();
+}
+
+function pumpDownloads() {
+  if (!aEl) return;   // no unlocked audio, no point
+  if (fetching.size >= 2) return;
+  const next = manifest.find(e => !blobs.has(e.qid) && !failed.has(e.qid) && !fetching.has(e.qid));
+  if (!next) return;
+  fetching.add(next.qid);
+  fetch(next.url)
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+    .then(b => {
+      blobs.set(next.qid, URL.createObjectURL(b));
+      send({ t: 'audio_ready', qid: next.qid });
+    })
+    .catch(() => {
+      failed.add(next.qid);
+      send({ t: 'audio_error', qid: next.qid });
+    })
+    .finally(() => {
+      fetching.delete(next.qid);
+      renderAudioStat();
+      pumpDownloads();
+    });
+  pumpDownloads();   // fill the second slot
+}
+
+// Point aEl at a qid: prefer the downloaded blob, fall back to the CDN
+// URL from the manifest (a straggler that gets an audio_state before
+// its download finished still plays — the network src streams).
+function loadQid(qid) {
+  if (curQid === qid && aEl.src) return true;
+  const entry = manifest.find(e => e.qid === qid);
+  const src = blobs.get(qid) || (entry && entry.url);
+  if (!src) return false;
+  curQid = qid;
+  aEl.src = src;
+  return true;
+}
+
+// Seeks can land before metadata; retry once it's there.
+function seekTo(t) {
+  if (!aEl) return;
+  if (aEl.readyState >= 1) { try { aEl.currentTime = t; } catch (e) {} }
+  else aEl.addEventListener('loadedmetadata', () => { try { aEl.currentTime = t; } catch (e) {} }, { once: true });
+}
+
+function clearPlayTimer() {
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+}
+
+function audioPause() {
+  clearPlayTimer();
+  if (aEl && curQid) aEl.pause();
+}
+
+function audioStop() {
+  clearPlayTimer();
+  if (!aEl) return;
+  aEl.pause();
+  if (curQid) { aEl.removeAttribute('src'); try { aEl.load(); } catch (e) {} }
+  curQid = null;
+}
+
+// audio_start / audio_resume: everything needed to play is in the
+// message — the qid, the host position pos, the rate, and the server
+// start instant at. Schedule for the local equivalent of at; if that
+// already passed (slow phone, late join), start now seeked forward by
+// the overshoot.
+function handleAudioPlay(m) {
+  if (!aEl || !loadQid(m.qid)) return;
+  clearPlayTimer();
+  aEl.playbackRate = m.rate || 1;
+  const d = qbSync.playDelay(m.at, offset(), Date.now());
+  if (d > 0) {
+    seekTo(m.pos);
+    playTimer = setTimeout(() => { playTimer = null; aEl.play().catch(() => renderAudioStat(true)); }, d);
+  } else {
+    seekTo(qbSync.lateSeek(m.pos, -d, m.rate || 1));
+    aEl.play().catch(() => renderAudioStat(true));
+  }
+}
+
+// audio_state: the host's answer to a resync (or an undo broadcast) —
+// jump straight to where the host is, no scheduling.
+function handleAudioState(m) {
+  if (!aEl) return;
+  if (m.playing) {
+    if (!loadQid(m.qid)) return;
+    clearPlayTimer();
+    aEl.playbackRate = m.rate || 1;
+    seekTo(qbSync.anchorTarget(m, offset(), Date.now()));
+    aEl.play().catch(() => renderAudioStat(true));
+  } else {
+    audioPause();
+    if (loadQid(m.qid)) { aEl.playbackRate = m.rate || 1; seekTo(m.pos); }
+  }
+}
+
+// Topline audio status: download progress while the packet loads, then
+// nothing (quiet when healthy), ♪✗ if anything failed, ♪ blocked if
+// play() was refused.
+function renderAudioStat(blocked) {
+  const el = $('audiostat');
+  if (blocked) { el.textContent = '♪ blocked'; el.className = 'bad'; return; }
+  if (!manifest.length) { el.textContent = ''; $('mutebtn').style.display = 'none'; return; }
+  $('mutebtn').style.display = '';
+  const have = manifest.filter(e => blobs.has(e.qid)).length;
+  if (failed.size) { el.textContent = '♪✗' + failed.size; el.className = 'bad'; }
+  else if (have < manifest.length) { el.textContent = '♪ ' + have + '/' + manifest.length; el.className = 'muted'; }
+  else { el.textContent = '♪'; el.className = 'good'; }
+}
+
+function renderMute() {
+  $('mutebtn').textContent = muted ? '🔇' : '🔊';
+  if (aEl) aEl.muted = muted;
+}
+$('mutebtn').onclick = () => {
+  muted = !muted;
+  localStorage.qbmodPlayerMute = muted ? '1' : '0';
+  renderMute();
+};
+renderMute();
 
 // The typed-answer bar over the buzz button. States: 'input' (my buzz
 // won, type it), 'sent' (waiting on the verdict), 'prompt' (try again),
@@ -252,8 +474,13 @@ function sendBuzz() {
   ws.send(JSON.stringify({ t: 'buzz' }));
   // Optimistic feedback: turn red NOW — the server verdict (win, someone
   // else, or rejected) reconciles when it arrives, which can lag by a
-  // round trip plus the arbitration window.
+  // round trip plus the arbitration window. Broadcast audio pauses on
+  // the same optimism (zero latency for the buzzer's own ears); it's
+  // safe because a rejection while audio plays means someone else's
+  // buzz opened the window, which pauses everyone anyway — and the
+  // voided-buzz path restarts us via the host's audio_resume.
   sentBuzz = true;
+  audioPause();
   vibrate(30);
   renderBuzz();
 }
