@@ -1,7 +1,8 @@
 // Engine rule-table vectors. Run: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, reduce, scores, teamScores, defaultConfig } from '../engine/engine.js';
+import { initialState, reduce, scores, teamScores, defaultConfig,
+         liveLog, bonusStats, tossupStats } from '../engine/engine.js';
 
 const play = (state, ...events) => events.reduce(reduce, state);
 
@@ -164,6 +165,27 @@ test('override edits a past line and totals recompute', () => {
   assert.equal(s.log[0].overridden, true);
 });
 
+test('override re-derives the kind from the new points', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 5 },
+    { type: 'verdict', result: 'correct' });          // power, 15
+  s = reduce(s, { type: 'override', entryIdx: 0, points: -5 });
+  assert.equal(s.log[0].kind, 'neg');
+  assert.deepEqual(tossupStats(s).A, { powers: 0, gets: 0, negs: 1 });
+  s = reduce(s, { type: 'override', entryIdx: 0, points: 0 });
+  assert.equal(s.log[0].kind, 'miss');
+  s = reduce(s, { type: 'override', entryIdx: 0, points: 15 });
+  assert.equal(s.log[0].kind, 'power');
+  s = reduce(s, { type: 'override', entryIdx: 0, points: 7 });  // custom value
+  assert.equal(s.log[0].kind, 'power');                          // kind kept
+  // non-tossup kinds keep their kind
+  let t = start();
+  t = play(t, { type: 'award', player: 'A', points: 10, reason: 'adjust' });
+  t = reduce(t, { type: 'override', entryIdx: 0, points: 5 });
+  assert.equal(t.log[0].kind, 'adjust');
+});
+
 test('impossible transitions are ignored', () => {
   let s = start();
   assert.equal(reduce(s, { type: 'verdict', result: 'correct' }), s); // no buzz yet
@@ -242,6 +264,110 @@ test('configure changes settings live; pad re-derives; log untouched', () => {
   s = reduce(s, { type: 'configure', patch: { scoring: false } });
   assert.equal(s.config.scoring, false);
   assert.equal(s.config.points.superpower, 20);        // deep merge kept it
+});
+
+function teamsStart() {
+  let s = initialState();
+  return play(s,
+    { type: 'player_join', player: 'A1', team: 'Red' },
+    { type: 'player_join', player: 'A2', team: 'Red' },
+    { type: 'player_join', player: 'B1', team: 'Blue' },
+    { type: 'player_join', player: 'Solo' },
+    { type: 'question_start', qid: 'q1', powerIdx: 10, unitCount: 40 });
+}
+
+test('team bonus lines raise the team score, not the player score', () => {
+  let s = teamsStart();
+  s = play(s,
+    { type: 'buzz', player: 'A1', unitIdx: 5 },
+    { type: 'verdict', result: 'correct' },                              // +15 to A1
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 10 },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 1, points: 0 },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 2, points: 10 });
+  assert.equal(scores(s).A1, 15);                    // tossup only
+  assert.equal(teamScores(s).Red, 35);               // 15 + 20 bonus
+});
+
+test('a teamless controller keeps bonus points individually', () => {
+  let s = teamsStart();
+  s = play(s,
+    { type: 'buzz', player: 'Solo', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },
+    { type: 'bonus_part', qid: 'q1', player: 'Solo', partIdx: 0, points: 10 });
+  assert.equal(scores(s).Solo, 20);
+  assert.equal(teamScores(s).Red ?? 0, 0);
+  assert.equal(bonusStats(s).players.Solo.points, 10);
+});
+
+test('re-sending a bonus part supersedes it (give/ungive toggling)', () => {
+  let s = teamsStart();
+  s = play(s,
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 10 },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 0 },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 10 });
+  assert.equal(teamScores(s).Red, 10);               // last line wins
+  assert.equal(liveLog(s).filter(e => e.kind === 'bonus').length, 1);
+  assert.equal(s.log.filter(e => e.kind === 'bonus').length, 3);  // history intact
+});
+
+test('bonusStats: heard counts distinct bonuses, zeros included; ppb', () => {
+  let s = teamsStart();
+  s = play(s,
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 10 },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 1, points: 10 },
+    { type: 'bonus_part', qid: 'q2', team: 'Red', partIdx: 0, points: 0 },   // 0-30 bonus
+    { type: 'bonus_part', qid: 'q2', team: 'Red', partIdx: 1, points: 0 },
+    { type: 'bonus_part', qid: 'q3', team: 'Blue', partIdx: 0, points: 10 });
+  const b = bonusStats(s);
+  assert.equal(b.teams.Red.heard, 2);
+  assert.equal(b.teams.Red.points, 20);
+  assert.equal(b.teams.Red.ppb, 10);
+  assert.equal(b.teams.Blue.heard, 1);
+});
+
+test('scoreless mode logs bonus parts at 0 (heard still tracked)', () => {
+  let s = initialState({ scoring: false });
+  s = play(s,
+    { type: 'player_join', player: 'A1', team: 'Red' },
+    { type: 'bonus_part', qid: 'q1', team: 'Red', partIdx: 0, points: 10 });
+  assert.equal(teamScores(s).Red, 0);
+  assert.equal(bonusStats(s).teams.Red.heard, 1);
+});
+
+test('tossupStats counts powers/gets/negs; superpowers fold into powers', () => {
+  let s = start({ points: { superpower: 20 } }, { powerIdx: 10, superpowerIdx: 5 });
+  s = play(s,
+    { type: 'buzz', player: 'B', unitIdx: 20 },
+    { type: 'verdict', result: 'wrong' },              // B neg
+    { type: 'buzz', player: 'A', unitIdx: 4 },
+    { type: 'verdict', result: 'correct' },            // A superpower
+    { type: 'question_start', qid: 'q2', powerIdx: 10, unitCount: 40 },
+    { type: 'buzz', player: 'A', unitIdx: 9 },
+    { type: 'verdict', result: 'correct' },            // A power
+    { type: 'question_start', qid: 'q3', powerIdx: 10, unitCount: 40 },
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },            // A get
+    { type: 'question_start', qid: 'q4', powerIdx: 10, unitCount: 40 },
+    { type: 'reading_finished' },
+    { type: 'buzz', player: 'B', unitIdx: 39 },
+    { type: 'verdict', result: 'wrong' });             // B miss, not a neg
+  assert.deepEqual(tossupStats(s).A, { powers: 2, gets: 1, negs: 0 });
+  assert.deepEqual(tossupStats(s).B, { powers: 0, gets: 0, negs: 1 });
+});
+
+test('pad-forced points set the kind for the stat line', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: null },      // voice mode: no position
+    { type: 'verdict', result: 'correct', points: 15 });
+  assert.equal(s.log[0].kind, 'power');
+  let t = start();
+  t = play(t,
+    { type: 'reading_finished' },
+    { type: 'buzz', player: 'B', unitIdx: 39 },
+    { type: 'verdict', result: 'wrong', points: -5 }); // host insists on the neg
+  assert.equal(t.log[0].kind, 'neg');
+  assert.deepEqual(tossupStats(t).B, { powers: 0, gets: 0, negs: 1 });
 });
 
 test('dead + next cycle (dead is logged for history)', () => {

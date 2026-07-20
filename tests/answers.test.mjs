@@ -37,6 +37,9 @@ const slices = [
 const preamble = `
 var state, cur, pendingBuzz = null, selPlayer = null, controlling = null;
 var earlyAnswer = null, roomArmed = null;
+var undoStack = [];
+var pushUndo = () => {};
+var apply = ev => { state = reduce(state, ev); };
 var sent = [];
 var room = { send: m => sent.push(m) };
 var calls = { paused: 0, resumed: 0 };

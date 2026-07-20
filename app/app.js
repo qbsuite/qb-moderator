@@ -15,7 +15,7 @@
 // Data contracts consumed (SPEC.md): the site's R2 data plane
 // (catalog.json, sets/{slug}.json) and the qb-audio dataset.
 
-import { initialState, reduce, scores, teamScores } from '../engine/engine.js';
+import { initialState, reduce, scores, teamScores, liveLog, bonusStats, tossupStats } from '../engine/engine.js';
 import * as audio from './audio.js';
 import { createRoom, connectHost } from './room.js';
 
@@ -44,10 +44,76 @@ const player = audio.createPlayer();
 let room = null;           // connected room (room.js) or null
 let roomArmed = null;      // last arm/disarm sent, to avoid spam
 let earlyAnswer = null;    // {name, text} typed before the buzz window resolved
+let review = null;         // {idx} when browsing a previous question
 const connected = new Set();  // player names currently connected via the room
-const qlog = [];           // completed questions [{label, question, answer, summary}]
+const qlog = [];           // completed questions [{qid, label, question, answer, summary}]
 
-function dispatch(ev) { state = reduce(state, ev); render(); }
+function dispatch(ev) { apply(ev); render(); }
+
+// ---------- undo (event replay) ----------
+// Every engine event goes through apply(); each host action pushes a
+// mark + a snapshot of the app-side mutables. Undo rebuilds the engine
+// state by replaying everything before the mark — keeping roster and
+// settings events that landed after it, so a mid-question room join
+// survives undoing the verdict it interrupted.
+const events = [];
+const undoStack = [];
+const ROSTER_EVENTS = new Set(['player_join', 'player_leave', 'player_move', 'configure']);
+
+function apply(ev) { events.push(ev); state = reduce(state, ev); }
+
+function snapCur() {
+  return cur && { ...cur, timer: null,
+    bonus: cur.bonus && { ...cur.bonus, given: [...cur.bonus.given], logged: [...cur.bonus.logged] } };
+}
+
+function pushUndo() {
+  undoStack.push({
+    mark: events.length, tuIdx, review: review && { ...review },
+    controlling, selPlayer,
+    pendingBuzz: pendingBuzz && { ...pendingBuzz },
+    cur: snapCur(), qlogLen: qlog.length,
+    audioTime: cur && cur.mode === 'audio' ? player.el.currentTime : 0,
+  });
+  if (undoStack.length > 100) undoStack.shift();
+}
+
+function undo() {
+  const s = undoStack.pop();
+  if (!s) return;
+  stopClocks();
+  // A buzz being undone releases the remote buzzer's answer bar.
+  if (room && pendingBuzz && selPlayer && !s.pendingBuzz) {
+    room.send({ t: 'answer_result', name: selPlayer, result: 'done' });
+  }
+  const kept = events.slice(0, s.mark)
+    .concat(events.slice(s.mark).filter(e => ROSTER_EVENTS.has(e.type)));
+  events.length = 0;
+  state = kept.reduce(reduce, initialState({}));
+  events.push(...kept);
+  tuIdx = s.tuIdx; review = s.review; controlling = s.controlling;
+  selPlayer = s.selPlayer; pendingBuzz = s.pendingBuzz; earlyAnswer = null;
+  cur = s.cur;
+  qlog.length = s.qlogLen;
+  for (const ql of qlog) if (ql.qid) ql.summary = summarize(ql.qid);
+  if (room) { roomArmed = null; room.send({ t: 'qlog', qlog }); }
+  $('bonuspanel').dataset.for = '';      // rebuild from the restored progress
+  $('setsheet').classList.remove('open');
+  if (cur && cur.mode === 'audio') {
+    // Reading resumes paused at the snapshot position (play/⟲ to go on).
+    if (player.el.src && player.el.src.includes(cur.q._id)) {
+      player.pause();
+      try { player.el.currentTime = s.audioTime; } catch (e) { /* not seekable yet */ }
+    } else {
+      player.load(cur.q._id);
+      player.el.playbackRate = voiceRate();
+      player.el.onerror = () => degradeToReveal();
+      const t = s.audioTime;
+      player.el.addEventListener('loadedmetadata', () => { player.el.currentTime = t; }, { once: true });
+    }
+  }
+  render();
+}
 
 // ---------- room mode (phones as buzzers) ----------
 $('roombtn').onclick = async () => {
@@ -90,6 +156,7 @@ $('roombtn').onclick = async () => {
 // else and follows in handleRemoteBuzz within the window (<=200ms).
 function handleRemoteBuzzPending(name) {
   if (!cur || cur.pending || state.phase !== 'reading' || pendingBuzz) return;
+  pushUndo();
   pauseReading();
   earlyAnswer = null;
   pendingBuzz = { unitIdx: posNow(), ts: Date.now(), tentative: true };
@@ -104,6 +171,7 @@ function handleRemoteBuzz(name) {
     // attribute it to the equalized winner.
     if (lockouts.includes(name)) {
       // Winner is locked out: undo the pause, reopen the buzzers.
+      undoStack.pop();   // the buzz_pending mark — the action never happened
       pendingBuzz = null; selPlayer = null; earlyAnswer = null;
       roomArmed = null;
       resumeReading();
@@ -111,7 +179,7 @@ function handleRemoteBuzz(name) {
       return;
     }
     delete pendingBuzz.tentative;
-    if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
+    if (!state.players.includes(name)) apply({ type: 'player_join', player: name, team: null });
     selPlayer = name;
     render();
     // A typed answer can outrun the window resolution across the two
@@ -125,7 +193,8 @@ function handleRemoteBuzz(name) {
   // original single-message path.
   if (!cur || cur.pending || state.phase !== 'reading' || pendingBuzz) { syncRoom(); return; }
   if (lockouts.includes(name)) { roomArmed = null; syncRoom(); return; }  // reopen buzzers
-  if (!state.players.includes(name)) state = reduce(state, { type: 'player_join', player: name, team: null });
+  pushUndo();
+  if (!state.players.includes(name)) apply({ type: 'player_join', player: name, team: null });
   pauseReading();
   pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
   selPlayer = name;
@@ -158,13 +227,21 @@ function handleRemoteAnswer(name, text) {
 function buildSnapshot() {
   const totals = scores(state);
   const tTotals = teamScores(state);
+  const tstats = tossupStats(state);
+  const bstats = bonusStats(state);
   const lockouts = state.current ? state.current.lockouts : [];
   return {
     label: cur ? (qidMeta[cur.q._id]?.label || '') : '',
-    teams: teamList.map(t => ({ name: t, score: tTotals[t] ?? 0 })),
+    teams: teamList.map(t => ({
+      name: t, score: tTotals[t] ?? 0,
+      bonus: bstats.teams[t]?.points ?? 0,
+      heard: bstats.teams[t]?.heard ?? 0,
+      ppb: bstats.teams[t]?.ppb ?? 0,
+    })),
     players: state.players.map(p => ({
       name: p, team: state.teams[p] || null,
       score: totals[p] ?? 0, locked: lockouts.includes(p),
+      stats: tstats[p] ?? null,
     })),
   };
 }
@@ -339,22 +416,41 @@ $('optSuper').onchange = () =>
   dispatch({ type: 'configure', patch: { points: { superpower: $('optSuper').checked ? 20 : null } } });
 $('optBonuses').onchange = render;
 $('optChecker').onchange = render;
+$('optBonusReveal').value = localStorage.qbmodBonusAns || 'auto';
+$('optBonusReveal').onchange = () => { localStorage.qbmodBonusAns = $('optBonusReveal').value; };
 
 // ---------- question flow ----------
+function summarize(qid) {
+  const lines = liveLog(state).filter(e => e.qid === qid);
+  const parts = [];
+  let bonusPts = 0, bonusWho = null;
+  for (const e of lines) {
+    if (e.kind === 'bonus') { bonusWho = e.team ?? e.player; bonusPts += e.points; continue; }
+    parts.push(e.kind === 'dead' ? 'dead' : `${e.player} ${e.points > 0 ? '+' : ''}${e.points}`);
+  }
+  if (bonusWho != null) parts.push(`${bonusWho} bonus +${bonusPts}`);
+  return parts.join(' · ') || 'skipped';
+}
+
 // Record a finished question into the players' browsable log.
 function logQuestion() {
   if (!cur) return;
   const qid = cur.q._id;
-  const events = state.log.filter(e => e.qid === qid);
-  const summary = events.map(e =>
-    e.kind === 'dead' ? 'dead'
-    : `${e.player} ${e.points > 0 ? '+' : ''}${e.points}`).join(' · ') || 'skipped';
   qlog.push({
+    qid,
     label: qidMeta[qid]?.label || '',
     question: cur.q.question_sanitized || cur.q.question || '',
     answer: cur.q.answer || '',
-    summary,
+    summary: summarize(qid),
   });
+  if (room) room.send({ t: 'qlog', qlog });
+}
+
+// A review edit changed a past question's outcome: refresh its qlog line.
+function refreshQlog(qid) {
+  const ql = qlog.find(x => x.qid === qid);
+  if (!ql) return;
+  ql.summary = summarize(qid);
   if (room) room.send({ t: 'qlog', qlog });
 }
 
@@ -379,7 +475,9 @@ async function nextQuestion() {
   qidMeta[q._id] = { label: `${packetLabel} · Tossup ${tuIdx + 1}` };
 
   if (mode === 'audio') {
-    cur.mapper = await audio.positionMapper(q._id, units.length);
+    const c = cur;
+    c.mapper = await audio.positionMapper(q._id, units.length);
+    if (cur !== c) return;   // undone/superseded while the sidecar loaded
     player.load(q._id);   // buffer ahead; playback waits for Start
     player.el.playbackRate = voiceRate();
     player.el.onerror = () => degradeToReveal();
@@ -389,6 +487,7 @@ async function nextQuestion() {
 
 function startReading() {
   if (!cur || !cur.pending) return;
+  pushUndo();
   cur.pending = false;
   dispatch({ type: 'question_start', qid: cur.q._id, powerIdx: cur.powerIdx,
              superpowerIdx: cur.superpowerIdx, unitCount: cur.units.length });
@@ -486,6 +585,7 @@ function eligible() {
 
 function buzz(unitIdx = undefined) {
   if (!cur || cur.pending || state.phase !== 'reading') return;
+  pushUndo();
   pauseReading();
   pendingBuzz = { unitIdx: unitIdx === undefined ? posNow() : unitIdx, ts: Date.now() };
   const el = eligible();
@@ -493,8 +593,9 @@ function buzz(unitIdx = undefined) {
   render();
 }
 
-function applyVerdict(result, points = null) {
+function applyVerdict(result, points = null, noUndo = false) {
   if (!pendingBuzz || !selPlayer) return;
+  if (!noUndo) pushUndo();
   const buzzer = selPlayer;
   dispatch({ type: 'buzz', player: selPlayer, unitIdx: pendingBuzz.unitIdx, ts: pendingBuzz.ts });
   const given = $('givenanswer').value.trim() || null;
@@ -514,14 +615,16 @@ function applyVerdict(result, points = null) {
 // with a pending buzz = assign player + verdict; otherwise = adjustment.
 function directPoints(p, v) {
   if (cur && !cur.pending && state.phase === 'reading') {
+    pushUndo();   // one level for the whole buzz+verdict tap
     pauseReading();
     pendingBuzz = { unitIdx: posNow(), ts: Date.now() };
     selPlayer = p;
-    applyVerdict(v > 0 ? 'correct' : 'wrong', v);
+    applyVerdict(v > 0 ? 'correct' : 'wrong', v, true);
   } else if (pendingBuzz) {
     selPlayer = p;
     applyVerdict(v > 0 ? 'correct' : 'wrong', v);
   } else if (v !== 0) {
+    pushUndo();
     dispatch({ type: 'award', player: p, points: v, reason: 'adjust' });
   }
 }
@@ -539,9 +642,23 @@ function suggested() {
 // ---------- controls ----------
 $('buzz').onclick = () => buzz();
 document.addEventListener('keydown', e => {
-  if (e.code === 'Space' && cur && state.phase === 'reading'
-      && document.activeElement.tagName !== 'INPUT'
-      && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); buzz(); }
+  const tag = document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); undo(); return; }
+  if (review) {
+    if (/^(Digit|Numpad)[1-9]$/.test(e.code)) {
+      const c = $('bonuspanel').querySelector('.bgive[data-i="' + (+e.code.slice(-1) - 1) + '"]');
+      if (c) { c.checked = !c.checked; c.onchange(); }
+    }
+    return;
+  }
+  if (e.code === 'Space') {
+    if (cur && state.phase === 'reading') { e.preventDefault(); buzz(); }
+    else if (bonusActive() && cur.bonus) { e.preventDefault(); bonusStep(); }
+  } else if (bonusActive() && cur.bonus && /^(Digit|Numpad)[1-9]$/.test(e.code)) {
+    const i = +e.code.slice(-1) - 1;
+    if (i < cur.bonus.n) bonusToggle(i, !cur.bonus.given[i]);
+  }
 });
 $('startbtn').onclick = startReading;
 $('restartbtn').onclick = () => {
@@ -562,6 +679,8 @@ $('playbtn').onclick = () => {
 };
 $('finishedbtn').onclick = () => dispatch({ type: 'reading_finished' });
 $('deadbtn').onclick = () => {
+  if (!cur || (state.phase !== 'reading' && state.phase !== 'buzzed' && !pendingBuzz)) return;
+  pushUndo();
   pauseReading();
   // Deading over a pending remote buzz: release the player's answer bar
   // ('done' is terminal but not a wrong on their screen).
@@ -569,7 +688,14 @@ $('deadbtn').onclick = () => {
   pendingBuzz = null; earlyAnswer = null;
   dispatch({ type: 'dead' });
 };
-$('nextbtn').onclick = () => { if (state.phase === 'done') dispatch({ type: 'next' }); nextQuestion(); };
+$('nextbtn').onclick = () => {
+  if (review) { reviewNav(1); return; }
+  pushUndo();
+  if (state.phase === 'done') dispatch({ type: 'next' });
+  nextQuestion();
+};
+$('prevbtn').onclick = () => reviewNav(-1);
+$('undobtn').onclick = undo;
 $('vcorrect').onclick = () => applyVerdict('correct');
 $('vwrong').onclick = () => applyVerdict('wrong');
 $('givenanswer').oninput = renderSuggestion;
@@ -580,6 +706,7 @@ function render() {
   renderScoring();
   renderHistory();
   renderMain();
+  $('undobtn').classList.toggle('hidden', !undoStack.length);
   syncRoom();
 }
 
@@ -589,6 +716,8 @@ function renderHeader() {
 }
 
 function renderMain() {
+  if (review) { renderReview(); return; }
+  $('reviewlines').classList.add('hidden');
   if (!cur) return;
   const q = cur.q;
   const phase = state.phase;
@@ -621,6 +750,8 @@ function renderMain() {
   $('deadbtn').classList.toggle('hidden', pending || phase === 'done' || phase === 'idle');
   $('nextbtn').classList.toggle('hidden', !packet);
   $('nextbtn').disabled = false;
+  const canReview = tuIdx > 0 && phase !== 'reading' && phase !== 'buzzed' && !pendingBuzz;
+  $('prevbtn').classList.toggle('hidden', !canReview);
 
   // The buzz button: armed while reading (except full-text mode, where
   // clicking the buzzed word replaces it); red while adjudicating.
@@ -682,48 +813,229 @@ function renderSuggestion() {
     : '<span class="bad">checker: REJECT</span>';
 }
 
-// ---------- bonus: parts revealed as they're scored ----------
+// ---------- bonus: space steps the reveal; checkboxes / 1-2-3 toggle ----------
+// Points go to the controlling player's TEAM (bonus_part events carry
+// the team; a teamless controller gets them individually). Parts are
+// logged the moment their answer shows — 0 by default — so ppb has a
+// bonuses-heard denominator; toggling a checkbox supersedes the line.
+function bonusRef() { return packet && packet.bonuses && packet.bonuses[tuIdx]; }
+function bonusActive() {
+  return !!($('optBonuses').checked && cur && state.phase === 'done' && controlling && bonusRef());
+}
+function bonusTeamLabel() { return state.teams[controlling] || controlling; }
+
+// Answers hidden until space (so the host can play): the mode default —
+// on for TTS audio and word-by-word reveal, off for full text — unless
+// the ⚙ setting pins it.
+function bonusPlayalong() {
+  const v = $('optBonusReveal').value || 'auto';
+  if (v === 'hidden') return true;
+  if (v === 'shown') return false;
+  return !cur || cur.mode !== 'text';
+}
+
+function bonusEmit(i, points) {
+  const team = state.teams[controlling] || null;
+  dispatch({ type: 'bonus_part', qid: cur.q._id, partIdx: i, points,
+             team, player: team ? null : controlling });
+}
+
+// Space: reveal the current part's answer, then the next part's text
+// (with answers shown, a new part brings its answer along).
+function bonusStep(noUndo = false) {
+  if (!cur || !cur.bonus) return;
+  const b = cur.bonus, el = $('bonuspanel');
+  if (b.revealed >= b.n) return;    // nothing left to reveal
+  if (!noUndo) pushUndo();
+  if (b.revealed < b.shown) {
+    const i = b.revealed++;
+    el.querySelector('#bp' + i + ' .bans').classList.remove('hidden');
+    if (!b.logged[i]) { b.logged[i] = true; bonusEmit(i, 0); }
+  } else {
+    el.querySelector('#bp' + b.shown).classList.remove('hidden');
+    b.shown++;
+    if (!b.playalong) return bonusStep(true);
+  }
+  if (b.revealed === b.n) el.querySelector('#bonusdone').classList.remove('hidden');
+  bonusTotalLine();
+}
+
+function bonusToggle(i, give) {
+  const b = cur && cur.bonus;
+  if (!b || i >= b.shown) return;   // part not on screen yet
+  pushUndo();
+  b.given[i] = give;
+  b.logged[i] = true;
+  const box = $('bonuspanel').querySelector('.bgive[data-i="' + i + '"]');
+  if (box) box.checked = give;
+  bonusEmit(i, give ? state.config.points.bonusPart : 0);
+  bonusTotalLine();
+}
+
+function bonusTotalLine() {
+  const b = cur && cur.bonus;
+  if (!b) return;
+  const total = b.given.filter(Boolean).length * state.config.points.bonusPart;
+  $('bonustotal').textContent = `bonus: +${total} to ${bonusTeamLabel()}`;
+}
+
 function renderBonus() {
   const el = $('bonuspanel');
-  const bonus = packet && packet.bonuses && packet.bonuses[tuIdx];
-  const active = $('optBonuses').checked && cur && state.phase === 'done' && controlling && bonus;
+  const bonus = bonusRef();
+  const active = bonusActive();
   el.classList.toggle('hidden', !active);
   if (!active) { el.dataset.for = ''; return; }
-  if (el.dataset.for === String(tuIdx)) return;   // built; button handlers mutate in place
+  if (el.dataset.for === String(tuIdx)) return;   // built; handlers mutate in place
   el.dataset.for = String(tuIdx);
-  cur.bonus = { next: 0, total: 0 };
 
   const parts = bonus.parts_sanitized || bonus.parts || [];
   const answers = bonus.answers || [];
-  el.innerHTML = `<div class="blabel">Bonus · ${esc(state.teams[controlling] || controlling)}</div>
+  // An undo (or a return from review) rebuilds the DOM from the
+  // restored progress instead of starting the cycle over.
+  const restored = !!(cur.bonus && cur.bonus.for === tuIdx);
+  if (!restored) {
+    cur.bonus = { for: tuIdx, n: parts.length, shown: 0, revealed: 0,
+                  given: parts.map(() => false), logged: parts.map(() => false),
+                  playalong: bonusPlayalong() };
+  }
+
+  el.innerHTML = `<div class="blabel">Bonus · ${esc(bonusTeamLabel())}</div>
     <div class="leadin">${esc(bonus.leadin_sanitized || bonus.leadin || '')}</div>`
     + parts.map((p, i) => `<div class="bpart hidden" id="bp${i}">
-        <div class="bq">${esc(p)}</div>
-        <div class="bans">→ ${answers[i] || ''}
-          <button class="good" data-i="${i}" data-v="${state.config.points.bonusPart}">+${state.config.points.bonusPart}</button>
-          <button data-i="${i}" data-v="0">0</button></div>
+        <input type="checkbox" class="bgive" data-i="${i}" title="+${state.config.points.bonusPart} (key ${i + 1})">
+        <div class="bbody">
+          <div class="bq">${esc(p)}</div>
+          <div class="bans hidden">→ ${answers[i] || ''}</div>
+        </div>
       </div>`).join('')
     + `<div class="controls hidden" id="bonusdone"><span class="muted" id="bonustotal"></span></div>`;
-  el.querySelector('#bp0')?.classList.remove('hidden');
-  for (const b of el.querySelectorAll('.bans button')) {
+  for (const c of el.querySelectorAll('.bgive')) {
+    c.onchange = () => { c.blur(); bonusToggle(+c.dataset.i, c.checked); };
+  }
+  if (restored) applyBonusProgress(); else bonusStep(true);
+}
+
+function applyBonusProgress() {
+  const b = cur.bonus, el = $('bonuspanel');
+  for (let i = 0; i < b.shown; i++) el.querySelector('#bp' + i).classList.remove('hidden');
+  for (let i = 0; i < b.revealed; i++) el.querySelector('#bp' + i + ' .bans').classList.remove('hidden');
+  b.given.forEach((g, i) => { const c = el.querySelector('.bgive[data-i="' + i + '"]'); if (c) c.checked = g; });
+  if (b.revealed === b.n) el.querySelector('#bonusdone').classList.remove('hidden');
+  bonusTotalLine();
+}
+
+// ---------- review: browse previous questions, fix outcomes ----------
+// ◂ steps back through the packet's completed tossups (between
+// questions only); ▸ returns toward the live one. A reviewed question
+// shows its full text + answer, its score lines with an edit pad
+// (engine `override` — kind re-derives from the new points), and its
+// bonus with live checkboxes (bonus_part supersede re-scores it).
+function reviewNav(d) {
+  if (!packet) return;
+  const limit = Math.min(tuIdx, packet.tossups.length);
+  if (!review) {
+    if (d > 0 || limit <= 0) return;
+    if (state.phase === 'reading' || state.phase === 'buzzed' || pendingBuzz) return;
+    review = { idx: limit - 1 };
+  } else {
+    const to = review.idx + d;
+    if (to >= limit) {
+      review = null;
+      $('bonuspanel').dataset.for = '';   // rebuild the live panel
+      if (!cur) { renderPacketDone(false); return; }
+    } else review = { idx: Math.max(0, to) };
+  }
+  render();
+}
+
+function renderReview() {
+  const i = review.idx;
+  const q = packet.tossups[i];
+  $('modeline').innerHTML = `<span class="faint">review</span> · ${esc(qidMeta[q._id]?.label || 'Tossup ' + (i + 1))}`;
+  const { units } = questionUnits(q.question_sanitized || q.question || '');
+  $('qtext').innerHTML = units.map((u, j) => {
+    const mark = u.t === '(*)' || u.t === '(+)';
+    return (j && u.sep ? ' ' : '') + (mark ? `<span class="mark">${esc(u.t)}</span>` : esc(u.t));
+  }).join('');
+  $('anspanel').classList.remove('hidden');
+  $('anspanel').innerHTML = '<span class="lbl">Answer</span> ' + (q.answer || '');
+  for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn',
+                    'progress', 'speedctl', 'ratectl', 'adjrow']) $(id).classList.add('hidden');
+  $('nextbtn').classList.remove('hidden');
+  $('nextbtn').disabled = false;
+  $('prevbtn').classList.toggle('hidden', i <= 0);
+  renderReviewLines(q._id);
+  renderReviewBonus(i, q._id);
+}
+
+function renderReviewLines(qid) {
+  const el = $('reviewlines');
+  const entries = liveLog(state).filter(e => e.qid === qid && e.kind !== 'bonus');
+  el.classList.toggle('hidden', !entries.length);
+  if (!entries.length) { el.innerHTML = ''; return; }
+  const opts = state.config.scoring ? [...state.config.pointPad, 0] : [];
+  el.innerHTML = entries.map(e => {
+    const idx = state.log.indexOf(e);
+    const who = e.kind === 'dead' ? '<span class="faint">dead</span>'
+      : `${esc(e.player ?? e.team ?? '')} · ${e.kind}${e.overridden ? ' <span class="faint">·</span>' : ''}`;
+    const pad = e.kind === 'dead' ? '' : opts.map(v =>
+      `<button data-e="${idx}" data-v="${v}" class="${v === e.points ? 'sel ' : ''}${
+        v > 0 ? 'good' : v < 0 ? 'bad' : ''}">${v > 0 ? '+' + v : v}</button>`).join('');
+    return `<div class="rline"><span class="rwho">${who}</span><span class="rpad">${pad}</span></div>`;
+  }).join('');
+  for (const b of el.querySelectorAll('button')) {
     b.onclick = () => {
-      const i = +b.dataset.i, v = +b.dataset.v;
-      cur.bonus.total += v;
-      if (v) state = reduce(state, { type: 'award', player: controlling, points: v, reason: 'bonus' });
-      const bans = b.parentElement;
-      const spend = document.createElement('span');
-      spend.className = 'scored ' + (v ? 'good' : 'faint');
-      spend.textContent = v ? '+' + v : '0';
-      for (const x of bans.querySelectorAll('button')) x.remove();
-      bans.appendChild(spend);
-      const next = el.querySelector('#bp' + (i + 1));
-      if (next) next.classList.remove('hidden');
-      else {
-        el.querySelector('#bonusdone').classList.remove('hidden');
-        el.querySelector('#bonustotal').textContent =
-          `bonus total: +${cur.bonus.total} to ${state.teams[controlling] || controlling}`;
-      }
-      renderScoring(); renderHistory();
+      pushUndo();
+      dispatch({ type: 'override', entryIdx: +b.dataset.e, points: +b.dataset.v });
+      refreshQlog(qid);
+    };
+  }
+}
+
+// Who the reviewed bonus belongs to: its own lines if it was heard,
+// else the tossup winner's team (lets a skipped bonus be scored late).
+function reviewBonusSource(qid) {
+  const entries = liveLog(state).filter(e => e.qid === qid);
+  const b = entries.find(e => e.kind === 'bonus');
+  if (b) return { team: b.team, player: b.player };
+  const t = entries.find(e => e.kind === 'power' || e.kind === 'get' || e.kind === 'superpower');
+  if (!t) return null;
+  const team = state.teams[t.player] || null;
+  return { team, player: team ? null : t.player };
+}
+
+function renderReviewBonus(i, qid) {
+  const el = $('bonuspanel');
+  const bonus = packet.bonuses && packet.bonuses[i];
+  const show = !!(bonus && $('optBonuses').checked);
+  el.classList.toggle('hidden', !show);
+  el.dataset.for = show ? 'r' + i : '';
+  if (!show) return;
+  const src = reviewBonusSource(qid);   // null on a dead tossup: read-only
+  const parts = bonus.parts_sanitized || bonus.parts || [];
+  const answers = bonus.answers || [];
+  const given = parts.map((_, j) => {
+    const e = liveLog(state).find(x => x.kind === 'bonus' && x.qid === qid && x.partIdx === j);
+    return !!(e && e.points > 0);
+  });
+  el.innerHTML = `<div class="blabel">Bonus${src ? ' · ' + esc(src.team ?? src.player) : ''}</div>
+    <div class="leadin">${esc(bonus.leadin_sanitized || bonus.leadin || '')}</div>`
+    + parts.map((p, j) => `<div class="bpart">
+        ${src ? `<input type="checkbox" class="bgive" data-i="${j}" ${given[j] ? 'checked' : ''}
+                   title="+${state.config.points.bonusPart} (key ${j + 1})">` : ''}
+        <div class="bbody">
+          <div class="bq">${esc(p)}</div>
+          <div class="bans">→ ${answers[j] || ''}</div>
+        </div>
+      </div>`).join('');
+  for (const c of el.querySelectorAll('.bgive')) {
+    c.onchange = () => {
+      c.blur();
+      pushUndo();
+      dispatch({ type: 'bonus_part', qid, partIdx: +c.dataset.i,
+                 points: c.checked ? state.config.points.bonusPart : 0,
+                 team: src.team, player: src.player });
+      refreshQlog(qid);
     };
   }
 }
@@ -739,6 +1051,8 @@ function rosterColumns() {
 function renderScoring() {
   const totals = scores(state);
   const tTotals = teamScores(state);
+  const tstats = tossupStats(state);
+  const bstats = bonusStats(state);
   const lockouts = state.current ? state.current.lockouts : [];
   const midQuestion = state.phase === 'reading' || state.phase === 'buzzed' || !!pendingBuzz;
   const pad = state.config.scoring ? [...state.config.pointPad, 0] : [];
@@ -747,16 +1061,22 @@ function renderScoring() {
     <button id="addplayerq" title="Add a player">+ player</button>
     <button id="addteamq" title="Add a team">+ team</button></div>`;
   $('scoring').innerHTML = bar + cols.map(col => {
+    const tb = col.team !== null && bstats.teams[col.team];
     const head = col.team === null
       ? `<div class="teamhead"><span class="tname unassigned">Players</span>${teamList.length ? '' : ''}</div>`
-      : `<div class="teamhead"><span class="tname" data-team="${esc(col.team)}">${esc(col.team)}</span><span class="tscore">${tTotals[col.team] ?? 0}</span></div>`;
+      : `<div class="teamhead"><span class="tname" data-team="${esc(col.team)}">${esc(col.team)}</span><span class="tscore">${tTotals[col.team] ?? 0}</span>${
+          tb && tb.heard ? `<span class="tbonus" title="bonus points · ppb">bonus +${tb.points} · ppb ${tb.ppb.toFixed(1)}</span>` : ''}</div>`;
     const rows = col.players.map(p => {
       const locked = lockouts.includes(p);
       const offline = room && !connected.has(p);
+      const st = tstats[p] || { powers: 0, gets: 0, negs: 0 };
+      const pb = !state.teams[p] && bstats.players[p];
       return `<div class="prow ${locked ? 'locked' : ''} ${p === selPlayer ? 'droptarget' : ''}" data-p="${esc(p)}">
         <span class="handle">≡</span>
         <span class="pname" data-p="${esc(p)}">${esc(p)}${offline
           ? ' <span class="faint" title="not connected to the room">○</span>' : ''}</span>
+        <span class="pstat" title="powers/gets/negs">${st.powers}/${st.gets}/${st.negs}${
+          pb && pb.heard ? ` · ppb ${pb.ppb.toFixed(1)}` : ''}</span>
         <span class="pscore">${totals[p] ?? 0}</span>
         <span class="pbtns">${pad.map(v =>
           `<button class="${v > 0 ? 'good' : v < 0 ? 'bad' : ''}" data-v="${v}"
@@ -785,7 +1105,7 @@ function renderScoring() {
       if (!to || to === from || teamList.includes(to)) return;
       teamList[teamList.indexOf(from)] = to;
       for (const p of state.players) {
-        if (state.teams[p] === from) state = reduce(state, { type: 'player_move', player: p, team: to });
+        if (state.teams[p] === from) apply({ type: 'player_move', player: p, team: to });
       }
       render();
     };
@@ -844,14 +1164,15 @@ function startDrag(e, p, row) {
 function renderHistory() {
   const rows = [];
   let lastQid = null;
-  for (const e of state.log) {
+  for (const e of liveLog(state)) {
     if (e.qid && e.qid !== lastQid) {
       lastQid = e.qid;
       rows.push(`<div class="tuhead">${esc(qidMeta[e.qid]?.label || 'Tossup')}</div>`);
     }
     const cls = e.points > 0 ? 'good' : e.points < 0 ? 'bad' : '';
+    const kind = e.kind === 'bonus' ? `bonus ${(e.partIdx ?? 0) + 1}` : e.kind;
     const label = e.kind === 'dead' ? '<span class="faint">dead</span>'
-      : `${esc(e.player ?? '')} · ${e.kind}${e.answer ? ' · “' + esc(e.answer) + '”' : ''}`;
+      : `${esc(e.team ?? e.player ?? '')} · ${kind}${e.answer ? ' · “' + esc(e.answer) + '”' : ''}`;
     const pts = e.kind === 'dead' ? '' : (e.points > 0 ? '+' + e.points : String(e.points));
     rows.push(`<li><span class="pts ${cls}">${pts}</span><span>${label}</span></li>`);
   }
@@ -903,11 +1224,11 @@ $('rostersave').onclick = () => {
   }
   teamList = newTeams;
   for (const p of [...state.players]) {
-    if (!wanted.some(w => w.name === p)) state = reduce(state, { type: 'player_leave', player: p });
+    if (!wanted.some(w => w.name === p)) apply({ type: 'player_leave', player: p });
   }
   // join/move each in order; append-to-end walks establish the order
   for (const w of wanted) {
-    state = reduce(state, state.players.includes(w.name)
+    apply(state.players.includes(w.name)
       ? { type: 'player_move', player: w.name, team: w.team }
       : { type: 'player_join', player: w.name, team: w.team });
   }
@@ -916,7 +1237,7 @@ $('rostersave').onclick = () => {
 };
 
 // ---------- packet end ----------
-function renderPacketDone() {
+function renderPacketDone(first = true) {
   cur = null; pendingBuzz = null;
   $('modeline').textContent = '';
   $('qtext').innerHTML = '<i class="faint">Packet finished — pick another (📦); scores carry over.</i>';
@@ -924,9 +1245,12 @@ function renderPacketDone() {
   $('progress').classList.add('hidden');
   $('bonuspanel').classList.add('hidden');
   $('adjrow').classList.add('hidden');
+  $('reviewlines').classList.add('hidden');
   for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn']) $(id).classList.add('hidden');
+  $('prevbtn').classList.toggle('hidden', tuIdx <= 0);   // review still works
+  $('undobtn').classList.toggle('hidden', !undoStack.length);
   renderHeader(); renderScoring(); renderHistory();
-  $('setsheet').classList.add('open');
+  if (first) $('setsheet').classList.add('open');
 }
 
 render();

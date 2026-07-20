@@ -60,7 +60,8 @@ entries (buzz order, lockouts, and history still work).
 | `reading_finished` | `{}` | closes the neg window (phase stays askable) |
 | `buzz` | `{player, unitIdx, ts}` | first non-locked-out player wins: phase → `buzzed`, reading pauses |
 | `verdict` | `{result: 'correct'\|'wrong', source: 'checker'\|'host', answer?, points?}` | scores per rule table — `points` overrides it (the host point pad in voice/manual-read mode, where position is unknown); correct → phase `done`; wrong → lockout, phase → `reading` (resume) or `dead` if everyone is locked out and reading finished |
-| `award` | `{player, points, reason}` | direct score line (host point pad, bonus parts, corrections) |
+| `award` | `{player, points, reason}` | direct score line (host point pad, corrections) |
+| `bonus_part` | `{qid, team?, player?, partIdx, points}` | one bonus part's outcome, attributed to the controlling player's **team** (or to the player only when teamless — Denis's rule: bonuses score to the team). Logged at 0 too, so bonuses-heard/ppb is derivable. Re-sending the same `(qid, partIdx)` **supersedes** the earlier line (`liveLog()` keeps the last) — give/ungive toggling is ordinary appends |
 | `dead` | `{}` | give up on the question: phase → `done`, no score |
 | `next` | `{}` | ready for the next `question_start` |
 | `override` | `{entryIdx, points}` | edits a past log entry (scores recompute) |
@@ -71,8 +72,16 @@ entries (buzz order, lockouts, and history still work).
 State shape: `{config, players[], teams: {player: teamName|null}, phase,
 current: {qid, powerIdx, superpowerIdx, unitCount, readingFinished,
 buzz: {player, unitIdx} | null, lockouts: []}, log: [{qid, player,
-points, kind, unitIdx, ts}]}`. `scores(state)` / `teamScores(state)` are
-selectors over `log`. **Teams**: a wrong buzz locks out the buzzer's
+team?, points, kind, partIdx?, unitIdx, ts}]}`. Selectors over `log`
+(all via `liveLog()`, which drops superseded bonus lines):
+`scores(state)` — per player, tossup-only unless teamless bonuses;
+`teamScores(state)` — members' points + team-attributed bonus lines;
+`bonusStats(state)` — `{teams, players}` of `{heard, points, ppb}`;
+`tossupStats(state)` — per player `{powers, gets, negs}` from entry
+kinds (superpowers count as powers; when a verdict carries forced pad
+points, the kind follows the forced value — a pad +15 is a power, a
+forced −5 after reading a neg — so voice-mode stat lines stay honest).
+**Teams**: a wrong buzz locks out the buzzer's
 whole team (standard rules); unassigned players lock out individually;
 the question deads when every player is locked after reading finishes.
 
@@ -92,10 +101,46 @@ the question deads when every player is locked after reading finishes.
 - `text` — full text + answer always visible: the host is the moderator
   and reads aloud themselves. Position unknown (`unitIdx: null`).
 
-Bonuses are an app-level toggle (engine-wise they're `award` events).
+**Bonus cycle** (app-level toggle; engine-wise `bonus_part` events):
+after a correct buzz the bonus reads part by part, tossup kept on
+screen. **Space** steps the reveal — current part's answer, then the
+next part's text. A **checkbox left of each part** (or keys **1/2/3**)
+gives/ungives that part's points to the controlling **team** —
+toggleable any time while the bonus is up, each toggle a superseding
+`bonus_part`. A part logs (at 0) the moment its answer shows, which is
+what feeds bonuses-heard/ppb. **Answers hidden until space** is the
+default in audio and reveal modes (the host plays along — no bonus TTS
+exists, the host reads the part aloud without seeing the answer) and
+off in full-text mode; a ⚙ setting (`auto`/`hidden`/`shown`,
+persisted) overrides the mode default, captured per bonus. Team panels
+show `bonus +X · ppb Y.Y`; player rows show a `powers/gets/negs` stat
+line (tossup-only scores). Tested in `tests/bonus.test.mjs` (sliced
+real handlers + real engine).
 The roster UI exposes per-player point buttons (pointPad + 0): during
 reading they capture buzz + verdict in one tap; otherwise they're direct
 `award` adjustments.
+
+**Undo** (app-level, event replay): every engine event funnels through
+one recorder; each host action (buzz, verdict, pad tap, bonus step or
+toggle, dead, next, start, review edit) pushes a mark + a snapshot of
+the app-side mutables (cur incl. bonus progress, tuIdx, pendingBuzz,
+qlog length, audio position). ↶ / ctrl+z rebuilds the engine state by
+replaying everything before the mark, KEEPING roster and `configure`
+events that landed after it — a mid-question room join survives
+undoing the verdict it interrupted. Reading states restore paused;
+audio reloads + seeks to the snapshot position when the question
+changed. Undoing a pending remote buzz releases the phone's answer bar
+(`answer_result: done`). Tested in `tests/undo.test.mjs`.
+
+**Review** (browse previous questions): ◂ steps back through the
+current packet's completed tossups (between questions only; ▸ returns
+toward the live one). A reviewed question shows its full text +
+answer, its score lines with an edit pad (`override` — kind re-derives
+from the new points so stat lines stay honest), and its bonus with
+live checkboxes / 1-2-3 keys (`bonus_part` supersede re-scores it; a
+bonus the tossup winner's team never heard can be scored late,
+attributed via the winning line). Review edits refresh the matching
+qlog entry so room players' Past Questions stay truthful.
 
 ## Reveal units (shared contract with the reader)
 

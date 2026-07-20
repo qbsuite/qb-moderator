@@ -80,6 +80,7 @@
     color: var(--muted); }
   .brow.me { color: var(--bright); font-weight: 700; }
   .brow.locked { opacity: 0.45; }
+  .bstat { color: var(--faint); font-size: 0.78em; font-weight: 400; }
 </style>
 </head>
 <body>
@@ -291,19 +292,22 @@ function renderAll() {
   renderBuzz();
   const board = $('board');
   if (!snapshot || !snapshot.teams) { board.innerHTML = ''; return; }
+  const stat = p => p.stats
+    ? `<span class="bstat">${p.stats.powers}/${p.stats.gets}/${p.stats.negs}</span>` : '';
   board.innerHTML = snapshot.teams.map(t => `
     <div class="bteam">
-      <div class="bhead"><span>${esc(t.name)}</span><span>${t.score}</span></div>
+      <div class="bhead"><span>${esc(t.name)}${t.heard
+        ? ` <span class="bstat">ppb ${(+t.ppb).toFixed(1)}</span>` : ''}</span><span>${t.score}</span></div>
       ${(snapshot.players || []).filter(p => p.team === t.name).map(p => `
         <div class="brow ${p.name === me ? 'me' : ''} ${p.locked ? 'locked' : ''}">
-          <span>${esc(p.name)}</span><span>${p.score}</span></div>`).join('')}
+          <span>${esc(p.name)} ${stat(p)}</span><span>${p.score}</span></div>`).join('')}
     </div>`).join('')
     + ((snapshot.players || []).some(p => !p.team) ? `
     <div class="bteam">
       <div class="bhead"><span class="muted">Players</span><span></span></div>
       ${(snapshot.players || []).filter(p => !p.team).map(p => `
         <div class="brow ${p.name === me ? 'me' : ''} ${p.locked ? 'locked' : ''}">
-          <span>${esc(p.name)}</span><span>${p.score}</span></div>`).join('')}
+          <span>${esc(p.name)} ${stat(p)}</span><span>${p.score}</span></div>`).join('')}
     </div>` : '');
 }
 

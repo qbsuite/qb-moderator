@@ -57,12 +57,22 @@
   .bonus .blabel { color: var(--faint); font-size: 0.8rem; text-transform: uppercase;
     letter-spacing: 0.05em; margin-bottom: 0.15rem; }
   .bonus .leadin, .bpart .bq { font-size: 1.16rem; line-height: 1.8; }
-  .bpart { margin: 0.45rem 0; }
-  .bpart .bans { font-size: 1rem; color: var(--muted); margin-top: 0.05rem;
-    display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .bpart { margin: 0.45rem 0; display: flex; gap: 0.7rem; align-items: flex-start; }
+  .bpart .bgive { width: 1.2rem; height: 1.2rem; margin: 0.5rem 0 0;
+    accent-color: var(--good); cursor: pointer; flex-shrink: 0; }
+  .bpart .bbody { flex: 1; min-width: 0; }
+  .bpart .bans { font-size: 1rem; color: var(--muted); margin-top: 0.05rem; }
   .bpart .bans u, .bpart .bans b { color: var(--bright); }
-  .bpart .bans button { padding: 0.2rem 0.7rem; font-size: 0.88rem; }
-  .bpart .scored { font-weight: 700; }
+
+  .reviewlines { margin-top: 0.9rem; border-top: 1px solid var(--border);
+    padding-top: 0.6rem; }
+  .rline { display: flex; align-items: center; gap: 0.8rem; padding: 0.2rem 0;
+    flex-wrap: wrap; }
+  .rline .rwho { min-width: 11rem; }
+  .rline .rpad { display: flex; gap: 4px; }
+  .rline button { padding: 0.25rem 0.6rem; font-size: 0.85rem; font-weight: 700;
+    min-width: 2.9rem; }
+  .rline button.sel { border-color: var(--link); background: rgba(107,158,255,0.15); }
 
   .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
     margin-top: 0.8rem; }
@@ -89,6 +99,7 @@
   .teamhead .tname { font-size: 1.15rem; font-weight: 700; color: var(--bright); cursor: pointer; }
   .teamhead .tname.unassigned { color: var(--faint); cursor: default; }
   .teamhead .tscore { font-size: 1.5rem; font-weight: 800; color: var(--bright); }
+  .teamhead .tbonus { color: var(--muted); font-size: 0.82rem; white-space: nowrap; }
   .team.dragover { outline: 1px dashed var(--link); outline-offset: 4px; border-radius: 8px; }
   .prow { display: flex; align-items: center; gap: 0.6rem;
     background: var(--raised); border: 1px solid var(--border); border-radius: 9px;
@@ -99,6 +110,7 @@
   .prow .handle { color: var(--faint); cursor: grab; touch-action: none; padding: 0 0.15rem; }
   .prow .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-weight: 600; font-size: 1.02rem; }
+  .prow .pstat { color: var(--faint); font-size: 0.78rem; white-space: nowrap; }
   .prow .pscore { font-weight: 800; font-size: 1.1rem; color: var(--bright);
     min-width: 2.2ch; text-align: right; }
   .prow .pbtns { display: flex; gap: 4px; }
@@ -137,6 +149,7 @@
     /* player rows: name + score + 4 buttons must fit ~360px */
     .prow { padding: 0.4rem 0.5rem; gap: 0.45rem; }
     .prow .pname { font-size: 0.95rem; }
+    .prow .pstat { font-size: 0.7rem; }
     .prow .pbtns { gap: 3px; }
     .prow .pbtns button { min-width: 2.35rem; padding: 0.3rem 0.15rem; font-size: 0.8rem; }
     .sheet.open { align-items: flex-end; }
@@ -187,6 +200,7 @@
     <div class="qtext" id="qtext"><i class="faint">Pick a set and packet (📦) to start.</i></div>
     <div class="progress hidden" id="progress"><i id="progressfill"></i></div>
     <div class="anspanel hidden" id="anspanel"></div>
+    <div class="reviewlines hidden" id="reviewlines"></div>
     <div class="bonus hidden" id="bonuspanel"></div>
     <div class="controls" id="controls">
       <button class="buzzbtn hidden" id="startbtn">Start</button>
@@ -200,6 +214,8 @@
       <button class="hidden" id="finishedbtn">Finished</button>
       <button class="hidden" id="deadbtn">Dead</button>
       <span class="grow"></span>
+      <button class="hidden" id="undobtn" title="Undo (ctrl+z)">↶</button>
+      <button class="hidden" id="prevbtn" title="Previous question">◂</button>
       <button class="hidden" id="nextbtn">Next ▸</button>
     </div>
     <div class="adjrow hidden" id="adjrow">
@@ -269,6 +285,12 @@
     <div class="srow"><input type="checkbox" checked id="optScoring"><label for="optScoring">Keep score</label></div>
     <div class="srow"><input type="checkbox" id="optSuper"><label for="optSuper">Superpowers (+20)</label></div>
     <div class="srow"><input type="checkbox" checked id="optBonuses"><label for="optBonuses">Bonuses</label></div>
+    <div class="srow"><label for="optBonusReveal">Bonus answers</label>
+      <select id="optBonusReveal" title="auto: hidden in audio and reveal modes">
+        <option value="auto">auto</option>
+        <option value="hidden">hidden until space</option>
+        <option value="shown">shown</option>
+      </select></div>
     <div class="srow"><input type="checkbox" checked id="optChecker"><label for="optChecker">Checker verdict suggestions</label></div>
     <div class="sheetfoot">
       <button onclick="document.getElementById('settingsheet').classList.remove('open')">Done</button>
