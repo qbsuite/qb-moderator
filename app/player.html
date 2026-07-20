@@ -104,6 +104,7 @@ if (params.get('code')) $('code').value = params.get('code');
 if (localStorage.qbmodName) $('name').value = localStorage.qbmodName;
 
 let ws = null, me = '', code = '', armed = false, mineBuzz = false, closed = false;
+let sentBuzz = false; // optimistic: our buzz is in flight, verdict pending
 let snapshot = null, qlog = [];
 
 $('joinbtn').onclick = join;
@@ -135,16 +136,17 @@ function connect() {
     // Echo RTT probes immediately (first, before any rendering) — the
     // server's latency-equalized buzz arbitration depends on them.
     if (m.t === 'ping') { try { ws.send(JSON.stringify({ t: 'pong', n: m.n, ts: m.ts })); } catch (err) {} return; }
-    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; renderAll(); renderPast(); }
+    if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false; renderAll(); renderPast(); }
     else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
-    else if (m.t === 'arm') { armed = true; mineBuzz = false; vibrate(40); renderBuzz(); }
-    else if (m.t === 'disarm') { armed = false; renderBuzz(); }
+    else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; vibrate(40); renderBuzz(); }
+    else if (m.t === 'disarm') { armed = false; sentBuzz = false; renderBuzz(); }
     else if (m.t === 'buzz') {
       armed = false;
+      sentBuzz = false;
       if (m.name === me) { mineBuzz = true; vibrate([60, 40, 60]); }
       renderBuzz(m.name);
     }
-    else if (m.t === 'rejected') { renderBuzz(); }
+    else if (m.t === 'rejected') { sentBuzz = false; renderBuzz(); }
     else if (m.t === 'state') { snapshot = m.snapshot; renderAll(); }
   };
   ws.onclose = () => {
@@ -188,8 +190,14 @@ $('buzzmode').onclick = () => {
 renderMode();
 
 function sendBuzz() {
-  if (!armed || amLocked() || !ws || ws.readyState !== 1) return;
+  if (!armed || sentBuzz || amLocked() || !ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ t: 'buzz' }));
+  // Optimistic feedback: turn red NOW — the server verdict (win, someone
+  // else, or rejected) reconciles when it arrives, which can lag by a
+  // round trip plus the arbitration window.
+  sentBuzz = true;
+  vibrate(30);
+  renderBuzz();
 }
 $('bigbuzz').onpointerdown = () => { if (buzzMode === 'press') sendBuzz(); };
 $('bigbuzz').onpointerup = () => { if (buzzMode === 'release') sendBuzz(); };
@@ -215,6 +223,7 @@ function renderBuzz(buzzer) {
   const b = $('bigbuzz');
   if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
   else if (buzzer) { b.className = 'other'; b.textContent = buzzer + ' buzzed'; }
+  else if (sentBuzz) { b.className = 'mine'; b.textContent = 'BUZZED'; }
   else if (amLocked()) { b.className = 'locked'; b.textContent = 'locked out'; }
   else if (armed) { b.className = ''; b.textContent = 'BUZZ'; }
   else { b.className = 'waiting'; b.textContent = '…'; }
