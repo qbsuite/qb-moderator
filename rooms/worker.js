@@ -11,13 +11,24 @@
 //
 // Protocol (all JSON text frames):
 //   player -> DO : {t:'buzz'}
+//                  {t:'pong', n, ts}       echo of a ping (RTT sample)
 //   host   -> DO : {t:'state', snapshot}   display snapshot, stored + fanned out
 //                  {t:'arm'} / {t:'disarm'} open/close the buzzers
 //   DO -> client : {t:'welcome', snapshot, armed, roster}
 //                  {t:'join'|'leave', name, role}
-//                  {t:'buzz', name}        first buzz wins, buzzers close
-//                  {t:'rejected'}          buzz while closed (only to sender)
+//                  {t:'buzz', name}        winning buzz, buzzers close
+//                  {t:'rejected'}          buzz while closed / lost the race (only to sender)
 //                  {t:'state', snapshot} / {t:'arm'} / {t:'disarm'}
+//   DO -> player : {t:'ping', n, ts}       RTT probe (sent on join + each arm)
+//
+// Buzz arbitration is LATENCY-EQUALIZED: the first buzz while armed opens
+// a short collection window (sized to the slowest connected player's
+// measured RTT, capped); every buzz arriving within it competes, and the
+// winner is the earliest ESTIMATED PRESS TIME (arrival − RTT/2, capped)
+// rather than earliest arrival — so a cross-country player races a local
+// one fairly. Clients that never pong have no RTT estimate: they get zero
+// compensation and, if no one has an estimate, a 0ms window — i.e. plain
+// first-arrival, exactly the old behavior (fully backward compatible).
 //
 // Rooms are temporary: no registry, the room code IS the DO name; a
 // room with no connections hibernates for free and its state is
@@ -69,10 +80,20 @@ export default {
 // returns to the pool with no stale state.
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
 
+// Latency equalization tuning. The compensation cap doubles as the
+// anti-abuse bound: a client faking lag (delaying its pongs) can backdate
+// its buzzes by at most MAX_COMP_MS, and inflated RTTs are visible to the
+// host in the roster. The window cap bounds how long a winner
+// announcement can lag the first arrival.
+const RTT_SAMPLES = 8;      // per-player samples kept (median is used)
+const MAX_COMP_MS = 100;    // cap on arrival backdating (= RTT/2 cap)
+const MAX_WINDOW_MS = 200;  // cap on the buzz collection window
+
 export class RoomDO {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    this.pending = null; // in-flight buzz collection window (in-memory only)
   }
 
   /** Any activity pushes the self-destruct alarm back by the TTL. */
@@ -124,14 +145,72 @@ export class RoomDO {
       qlog: qlog ?? [], roster: this.roster(),
     }));
     this.broadcast({ t: 'join', name, role }, server);
+    this.pingSocket(server); // first RTT sample right away
     return new Response(null, { status: 101, webSocket: client });
   }
 
   roster() {
     return this.ctx.getWebSockets().map(ws => {
       const a = ws.deserializeAttachment() || {};
-      return { name: a.name, role: a.role };
+      return { name: a.name, role: a.role, rtt: this.rttOf(a) };
     });
+  }
+
+  // ---------- latency equalization ----------
+
+  /** Median of the connection's recent RTT samples (null = no data). */
+  rttOf(att) {
+    const s = att.rtts || [];
+    if (!s.length) return null;
+    const sorted = [...s].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  /** How far to backdate this player's buzz arrivals. */
+  compOf(att) {
+    const r = this.rttOf(att);
+    return r == null ? 0 : Math.min(r / 2, MAX_COMP_MS);
+  }
+
+  /** Collection window: long enough for the slowest player's buzz to make
+   *  it in. 0 when no player has RTT data (old clients / in-person LAN
+   *  rooms stay effectively instant). */
+  buzzWindow() {
+    let w = 0;
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() || {};
+      if (a.role !== 'player') continue;
+      const r = this.rttOf(a);
+      if (r != null) w = Math.max(w, Math.min(r, MAX_WINDOW_MS));
+    }
+    return w;
+  }
+
+  pingSocket(ws) {
+    const att = ws.deserializeAttachment() || {};
+    if (att.role !== 'player') return;
+    att.pingN = (att.pingN || 0) + 1;
+    att.pingTs = Date.now();
+    ws.serializeAttachment(att);
+    try { ws.send(JSON.stringify({ t: 'ping', n: att.pingN, ts: att.pingTs })); } catch (e) { /* closing */ }
+  }
+
+  pingPlayers() {
+    for (const ws of this.ctx.getWebSockets()) this.pingSocket(ws);
+  }
+
+  /** Close the collection window: earliest estimated press time wins.
+   *  Losers hear their rejection BEFORE the winner broadcast so their UI
+   *  settles on "X buzzed". */
+  resolveBuzz() {
+    const cands = this.pending || [];
+    this.pending = null;
+    if (!cands.length) return;
+    cands.sort((a, b) => a.adj - b.adj);
+    for (const c of cands.slice(1)) {
+      try { c.ws.send(JSON.stringify({ t: 'rejected' })); } catch (e) { /* closing */ }
+    }
+    this.broadcast({ t: 'buzz', name: cands[0].name });
   }
 
   broadcast(obj, except = null) {
@@ -149,13 +228,34 @@ export class RoomDO {
     await this.touch();
 
     if (att.role === 'player') {
+      if (msg.t === 'pong') {
+        // RTT sample. The nonce check stops stale/replayed pongs from
+        // inflating the estimate beyond what actually delaying the pong
+        // can achieve (which the MAX_COMP_MS cap bounds anyway).
+        if (msg.n === att.pingN && att.pingTs) {
+          const rtt = Date.now() - att.pingTs;
+          att.pingTs = null;
+          att.rtts = [...(att.rtts || []), rtt].slice(-RTT_SAMPLES);
+          ws.serializeAttachment(att);
+        }
+        return;
+      }
       if (msg.t !== 'buzz') return;
-      // Atomic first-buzz arbitration: the DO processes messages
-      // serially, so the first buzz closes the gate for everyone else.
+      const now = Date.now();
+      if (this.pending) {
+        // A window is open: this buzz competes on estimated press time.
+        this.pending.push({ ws, name: att.name, adj: now - this.compOf(att) });
+        return;
+      }
+      // Atomic window-open: the DO processes messages serially (and the
+      // input gate holds new events during the storage ops), so exactly
+      // one buzz opens the window and closes the gate for everyone who
+      // arrives after it resolves.
       const armed = await this.ctx.storage.get('armed');
       if (!armed) { ws.send(JSON.stringify({ t: 'rejected' })); return; }
       await this.ctx.storage.put('armed', false);
-      this.broadcast({ t: 'buzz', name: att.name });
+      this.pending = [{ ws, name: att.name, adj: now - this.compOf(att) }];
+      setTimeout(() => this.resolveBuzz(), this.buzzWindow());
       return;
     }
 
@@ -166,6 +266,7 @@ export class RoomDO {
     } else if (msg.t === 'arm') {
       await this.ctx.storage.put('armed', true);
       this.broadcast({ t: 'arm' }, ws);
+      this.pingPlayers(); // refresh RTT estimates once per question cycle
     } else if (msg.t === 'disarm') {
       await this.ctx.storage.put('armed', false);
       this.broadcast({ t: 'disarm' }, ws);

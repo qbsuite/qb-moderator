@@ -132,6 +132,9 @@ function connect() {
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+    // Echo RTT probes immediately (first, before any rendering) — the
+    // server's latency-equalized buzz arbitration depends on them.
+    if (m.t === 'ping') { try { ws.send(JSON.stringify({ t: 'pong', n: m.n, ts: m.ts })); } catch (err) {} return; }
     if (m.t === 'welcome') { armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; renderAll(); renderPast(); }
     else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
     else if (m.t === 'arm') { armed = true; mineBuzz = false; vibrate(40); renderBuzz(); }

@@ -128,9 +128,23 @@ for late joiners.
 - `POST /rooms` → `{code}` (4 chars, unambiguous alphabet; the code IS
   the DO name — no registry, rooms are temporary).
 - `GET /rooms/:code/ws?name=&role=host|player` → WebSocket.
-- player→DO: `{t:'buzz'}` — accepted only while armed; first buzz
-  disarms atomically (DO messages are serial) and broadcasts
-  `{t:'buzz', name}`; otherwise `{t:'rejected'}` to the sender.
+- player→DO: `{t:'buzz'}` — accepted only while armed; otherwise
+  `{t:'rejected'}` to the sender. Also `{t:'pong', n, ts}` echoing an
+  RTT probe.
+- **Latency-equalized arbitration**: the DO pings players (`{t:'ping',
+  n, ts}`, on join + each arm) and keeps a per-connection median RTT.
+  The first buzz while armed disarms atomically (DO messages are
+  serial) and opens a collection window sized to the slowest connected
+  player's RTT (cap 200ms); buzzes arriving within it compete on
+  **estimated press time** (arrival − RTT/2, compensation cap 100ms) and
+  the winner is broadcast as `{t:'buzz', name}`, losers get
+  `{t:'rejected'}`. So a cross-country remote player races a local one
+  fairly; the caps bound both the announcement delay and what faking
+  lag (delaying pongs — the irreducible attack) can steal. Clients that
+  never pong get zero compensation, and with no RTT data at all the
+  window is 0ms — plain first-arrival, the pre-equalization behavior
+  (fully backward compatible). Roster entries carry each player's `rtt`
+  so hosts can eyeball implausible values.
 - host→DO: `{t:'state', snapshot}` (stored + fanned out),
   `{t:'arm'}` / `{t:'disarm'}`.
 - DO→client: `{t:'welcome', snapshot, armed, roster}` on connect, plus
