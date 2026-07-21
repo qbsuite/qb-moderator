@@ -8,7 +8,7 @@
 //   damerau-levenshtein-js 1.1.8 (MIT © Fabvalaaah)
 //   stemmer 2.0.1             (MIT © Titus Wormer)
 //   number-to-words 1.2.4     (MIT © Martin Eneqvist)
-//   roman-numerals 0.3.2      (Apache-2.0 © Erik Koopmans)
+//   roman-numerals 0.3.2      (MIT © Arnaud 'red' Rouyer)
 //
 // Exposes window.qbCheckAnswer(answerline, givenAnswer, strictness?) ->
 // { directive: 'accept'|'prompt'|'reject', directedPrompt?: string }.
