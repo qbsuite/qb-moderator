@@ -65,6 +65,7 @@ entries (buzz order, lockouts, and history still work).
 | `dead` | `{}` | give up on the question: phase → `done`, no score |
 | `next` | `{}` | ready for the next `question_start` |
 | `override` | `{entryIdx, points}` | edits a past log entry (scores recompute) |
+| `clear_scores` | `{}` | empties the log: every score, stat line, and ppb re-derives to zero; roster, config, and the current question (lockouts included) are untouched |
 | `player_join` / `player_leave` | `{player, team?}` | roster; team is optional |
 | `player_move` | `{player, team?, before?}` | reassign team and/or reorder: re-inserted before `before` (or at the end); `team` omitted = keep (pure reorder) |
 | `configure` | `{patch}` | live settings change: merges scoring/points/humanJudge; pointPad re-derives from new points unless the patch pins one; the log is untouched |

@@ -121,3 +121,15 @@ test('undoing past a question retracts its qlog entry and refreshes the rest', (
   assert.equal(ctx.qlog.length, 1);
   assert.equal(ctx.qlog[0].summary, 'refreshed');
 });
+
+test('undo restores the scores a clear_scores wiped', () => {
+  const ctx = harness();
+  ctx.apply({ type: 'buzz', player: 'A', unitIdx: 5 });
+  ctx.apply({ type: 'verdict', result: 'correct' });
+  assert.equal(scores(ctx.state).A, 10);
+  ctx.pushUndo();                          // the clear action's mark
+  ctx.apply({ type: 'clear_scores' });
+  assert.equal(scores(ctx.state).A, 0);
+  ctx.undo();
+  assert.equal(scores(ctx.state).A, 10);
+});

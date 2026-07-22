@@ -544,6 +544,18 @@ $('optBroadcast').onchange = () => {
   if ($('optBroadcast').checked) sendAudioManifest();
   else if (room && cur && cur.mode === 'audio') room.send({ t: 'audio_stop', qid: cur.q._id });
 };
+// Clear all scores (e.g. starting a new game on the same roster): one
+// engine event empties the log; roster, settings, and the current
+// question survive. Undoable like any host action; past questions'
+// qlog summaries refresh so room players' history stays truthful.
+$('clearscores').onclick = () => {
+  if (!confirm('Clear all scores?')) return;
+  pushUndo();
+  dispatch({ type: 'clear_scores' });
+  for (const ql of qlog) if (ql.qid) ql.summary = summarize(ql.qid);
+  if (room) room.send({ t: 'qlog', qlog });
+  $('settingsheet').classList.remove('open');
+};
 
 // ---------- question flow ----------
 function summarize(qid) {

@@ -378,3 +378,43 @@ test('dead + next cycle (dead is logged for history)', () => {
   assert.deepEqual(s.log.map(e => e.kind), ['dead']);
   assert.equal(scores(s).A, 0);
 });
+
+test('clear_scores empties the log; roster, config, and current question survive', () => {
+  let s = start({ points: { superpower: 20 } }, { powerIdx: 10, superpowerIdx: 5 });
+  s = play(s,
+    { type: 'player_move', player: 'A', team: 'Red' },
+    { type: 'player_move', player: 'B', team: 'Blue' },
+    { type: 'buzz', player: 'B', unitIdx: 3 },
+    { type: 'verdict', result: 'wrong' },              // B neg + lockout
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },
+    { type: 'bonus_part', partIdx: 0, team: 'Red', points: 10 },
+    { type: 'question_start', qid: 'q2', powerIdx: 10, unitCount: 40 },
+    { type: 'buzz', player: 'B', unitIdx: 5 },
+    { type: 'verdict', result: 'wrong' });             // B locked out on q2
+  const lockouts = s.current.lockouts;
+  assert.equal(scores(s).A, 10);
+  s = reduce(s, { type: 'clear_scores' });
+  assert.deepEqual(s.log, []);
+  assert.deepEqual(scores(s), { A: 0, B: 0 });
+  assert.deepEqual(teamScores(s), { Red: 0, Blue: 0 });
+  assert.deepEqual(bonusStats(s), { teams: {}, players: {} });
+  assert.deepEqual(tossupStats(s).B, { powers: 0, gets: 0, negs: 0 });
+  assert.deepEqual(s.players, ['A', 'B']);
+  assert.equal(s.config.points.superpower, 20);
+  assert.equal(s.phase, 'reading');                    // q2 keeps going
+  assert.equal(s.current.qid, 'q2');
+  assert.deepEqual(s.current.lockouts, lockouts);      // B stays locked out
+});
+
+test('clear_scores works between questions (no current)', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },
+    { type: 'next' },
+    { type: 'clear_scores' });
+  assert.deepEqual(s.log, []);
+  assert.equal(s.phase, 'idle');
+  assert.equal(scores(s).A, 0);
+});
