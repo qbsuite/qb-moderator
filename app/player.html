@@ -14,7 +14,7 @@
   html, body { margin: 0; height: 100%; }
   body { background: var(--bg); color: var(--text);
          font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-         display: flex; flex-direction: column; }
+         display: flex; flex-direction: column; overflow-y: auto; }
   .muted { color: var(--muted); font-size: 0.86rem; }
   .good { color: var(--good); } .bad { color: var(--bad); }
 
@@ -49,7 +49,9 @@
     background: var(--link); color: #fff; border: none; border-radius: 9px; cursor: pointer; }
   #answerrow input:disabled, #answerrow button:disabled { opacity: 0.5; }
 
-  #bigbuzz { flex: 1; margin: 1rem; border: none; border-radius: 22px;
+  /* Fills the free space but NEVER shrinks: the scoreboard and Past
+     Questions growing below push the page into scroll instead. */
+  #bigbuzz { flex: 1 0 auto; min-height: 45vh; margin: 1rem; border: none; border-radius: 22px;
     font-size: 2.2rem; font-weight: 800; color: #06120b; background: var(--good);
     cursor: pointer; touch-action: none; transition: background 0.1s; }
   #bigbuzz.waiting { background: var(--input); color: var(--faint); }
@@ -73,6 +75,7 @@
   #pastq .qbody { font-size: 0.98rem; line-height: 1.65; padding: 0.4rem 0 0.3rem; }
   #pastq .qans { color: var(--muted); padding-bottom: 0.2rem; }
   #pastq .qans u, #pastq .qans b { color: var(--bright); }
+  #pastq .qbonus { border-top: 1px dashed var(--border); margin-top: 0.4rem; padding-top: 0.35rem; }
   .bteam { margin-top: 0.7rem; }
   .bteam .bhead { display: flex; justify-content: space-between; font-weight: 700;
     color: var(--bright); border-bottom: 1px solid var(--border); padding-bottom: 0.15rem; }
@@ -127,6 +130,7 @@ if (params.get('code')) $('code').value = params.get('code');
 if (localStorage.qbmodName) $('name').value = localStorage.qbmodName;
 
 let ws = null, me = '', code = '', armed = false, mineBuzz = false, closed = false;
+let lastBuzzer = null; // buzz winner, shown on everyone's button until the verdict or re-arm
 let sentBuzz = false; // optimistic: our buzz is in flight, verdict pending
 let snapshot = null, qlog = [];
 
@@ -196,7 +200,8 @@ function connect() {
     // server's latency-equalized buzz arbitration depends on them.
     if (m.t === 'ping') { try { ws.send(JSON.stringify({ t: 'pong', n: m.n, ts: m.ts })); } catch (err) {} return; }
     if (m.t === 'welcome') {
-      armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || []; mineBuzz = false; sentBuzz = false;
+      armed = m.armed; snapshot = m.snapshot; qlog = m.qlog || [];
+      mineBuzz = false; sentBuzz = false; lastBuzzer = null;
       answerBar(null); renderAll(); renderPast();
       if (m.audioManifest) setManifest(m.audioManifest);
       // Mid-question (re)connects learn the current audio position from
@@ -204,7 +209,7 @@ function connect() {
       send({ t: 'audio_resync' });
     }
     else if (m.t === 'qlog') { qlog = m.qlog || []; renderPast(); }
-    else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; answerBar(null); vibrate(40); renderBuzz(); }
+    else if (m.t === 'arm') { armed = true; mineBuzz = false; sentBuzz = false; lastBuzzer = null; answerBar(null); vibrate(40); renderBuzz(); }
     else if (m.t === 'disarm') { armed = false; sentBuzz = false; renderBuzz(); }
     else if (m.t === 'buzz_pending') {
       // First arrival at the server: pause NOW, same instant the host
@@ -215,13 +220,14 @@ function connect() {
     else if (m.t === 'buzz') {
       armed = false;
       sentBuzz = false;
+      lastBuzzer = m.name;
       audioPause();   // belt over buzz_pending's suspenders
       if (m.name === me) {
         mineBuzz = true; vibrate([60, 40, 60]);
         $('answer').value = '';
         answerBar('input');
       }
-      renderBuzz(m.name);
+      renderBuzz();
     }
     else if (m.t === 'sync') {
       syncSamples.push(qbSync.sampleFromExchange(m.c, m.s, Date.now()));
@@ -240,7 +246,10 @@ function connect() {
       if (m.for && m.for !== me) return;
       handleAudioState(m);
     }
-    else if (m.t === 'answer_result' && m.name === me) {
+    else if (m.t === 'answer_result') {
+      // A terminal verdict settles everyone's button, not just the buzzer's.
+      if (m.result !== 'prompt' && m.name === lastBuzzer) { lastBuzzer = null; renderBuzz(); }
+      if (m.name !== me) return;
       if (m.result === 'prompt') {
         vibrate(60);
         answerBar('prompt', 'prompt' + (m.prompt ? ': ' + esc(m.prompt) : ''));
@@ -504,10 +513,10 @@ document.addEventListener('keyup', e => {
   if (keyGuard(e) && buzzMode === 'release') sendBuzz();
 });
 
-function renderBuzz(buzzer) {
+function renderBuzz() {
   const b = $('bigbuzz');
   if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
-  else if (buzzer) { b.className = 'other'; b.textContent = buzzer + ' buzzed'; }
+  else if (lastBuzzer) { b.className = 'other'; b.textContent = lastBuzzer + ' buzzed'; }
   else if (sentBuzz) { b.className = 'mine'; b.textContent = 'BUZZED'; }
   else if (amLocked()) { b.className = 'locked'; b.textContent = 'locked out'; }
   else if (armed) { b.className = ''; b.textContent = 'BUZZ'; }
@@ -538,6 +547,17 @@ function renderAll() {
     </div>` : '');
 }
 
+// A qlog entry carries its bonus only if the room heard it (host-side
+// spoiler gate); answers arrive pre-formatted HTML like the tossup's.
+function bonusHtml(b) {
+  if (!b) return '';
+  return `<div class="qbonus"><div class="qbody">${esc(b.leadin)}</div>`
+    + (b.parts || []).map((p, i) => `
+      <div class="qbody">${esc(p)}</div>
+      <div class="qans">${(b.answers || [])[i] || ''}</div>`).join('')
+    + '</div>';
+}
+
 function renderPast() {
   const el = $('pastq');
   if (!qlog.length) { el.innerHTML = ''; return; }
@@ -546,6 +566,7 @@ function renderPast() {
       <summary><b>${esc(q.label)}</b><span class="sum">${esc(q.summary)}</span></summary>
       <div class="qbody">${esc(q.question)}</div>
       <div class="qans">${q.answer}</div>
+      ${bonusHtml(q.bonus)}
     </details>`).join('');
 }
 })();

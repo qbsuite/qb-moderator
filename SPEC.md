@@ -118,8 +118,11 @@ exists, the host reads the part aloud without seeing the answer) and
 off in full-text mode; a ⚙ setting (`auto`/`hidden`/`shown`,
 persisted) overrides the mode default, captured per bonus. Team panels
 show `bonus +X · ppb Y.Y`; player rows show a `powers/gets/negs` stat
-line (tossup-only scores). Tested in `tests/bonus.test.mjs` (sliced
-real handlers + real engine).
+line (tossup-only scores). A **heard** bonus (any part logged) ships
+its text + answers with the question's qlog entry, so room players'
+Past Questions include it; unheard bonuses stay off the wire until
+review scores them late (they can still be read aloud — no spoilers).
+Tested in `tests/bonus.test.mjs` (sliced real handlers + real engine).
 The roster UI exposes per-player point buttons (pointPad + 0): during
 reading they capture buzz + verdict in one tap; otherwise they're direct
 `award` adjustments.
@@ -237,8 +240,9 @@ for late joiners.
   Player joins auto-`player_join` the engine roster.
 - Player page (`app/player.html`): join by code (+`?code=`/`?server=`
   URL params), full-screen buzz button (armed/waiting/mine/other/
-  locked states), typed-answer bar (input → sent → prompt/correct/
-  wrong), live scoreboard, vibration, auto-reconnect.
+  locked states; the buzz winner's name stays on everyone's button
+  until the verdict or re-arm), typed-answer bar (input → sent →
+  prompt/correct/wrong), live scoreboard, vibration, auto-reconnect.
 - Live protocol test: `node tests/rooms.e2e.mjs` (not in CI — hits the
   deployed instance).
 

@@ -570,17 +570,24 @@ function summarize(qid) {
   return parts.join(' · ') || 'skipped';
 }
 
+// A bonus is "heard" once any of its parts logged; only then does its
+// text ship with the qlog entry — an unread bonus stays off the wire
+// (it can still be read aloud late from review, so no spoilers).
+const bonusHeard = qid => liveLog(state).some(e => e.kind === 'bonus' && e.qid === qid);
+
 // Record a finished question into the players' browsable log.
 function logQuestion() {
   if (!cur) return;
   const qid = cur.q._id;
-  qlog.push({
+  const entry = {
     qid,
     label: qidMeta[qid]?.label || '',
     question: cur.q.question_sanitized || cur.q.question || '',
     answer: cur.q.answer || '',
     summary: summarize(qid),
-  });
+  };
+  if (bonusHeard(qid)) entry.bonus = qidMeta[qid]?.bonus;
+  qlog.push(entry);
   if (room) room.send({ t: 'qlog', qlog });
 }
 
@@ -589,6 +596,7 @@ function refreshQlog(qid) {
   const ql = qlog.find(x => x.qid === qid);
   if (!ql) return;
   ql.summary = summarize(qid);
+  if (!ql.bonus && bonusHeard(qid)) ql.bonus = qidMeta[qid]?.bonus;
   if (room) room.send({ t: 'qlog', qlog });
 }
 
@@ -612,6 +620,14 @@ async function nextQuestion(autoStart) {
           slow: mode === 'reveal' ? slowSpans(units.map(u => u.t)) : null,
           mapper: null, timer: null, bonus: null };
   qidMeta[q._id] = { label: `${packetLabel} · Tossup ${tuIdx + 1}` };
+  const bn = bonusRef();
+  if (bn) {
+    qidMeta[q._id].bonus = {
+      leadin: bn.leadin_sanitized || bn.leadin || '',
+      parts: bn.parts_sanitized || bn.parts || [],
+      answers: bn.answers || [],
+    };
+  }
 
   if (mode === 'audio') {
     const c = cur;

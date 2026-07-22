@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { initialState, reduce, scores, teamScores, bonusStats } from '../engine/engine.js';
+import { initialState, reduce, scores, teamScores, bonusStats, liveLog } from '../engine/engine.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '../app/app.js'), 'utf8');
@@ -117,4 +117,50 @@ test('a teamless controller gets the bonus individually', () => {
   assert.deepEqual(bonusLog(ctx).at(-1), { team: null, player: 'Solo', partIdx: 0, points: 10 });
   assert.equal(scores(ctx.state).Solo, 20);         // 10 tossup + 10 bonus
   assert.equal(bonusStats(ctx.state).players.Solo.ppb, 10);
+});
+
+// ---- qlog bonus attachment (players' Past Questions) ----
+// Heard bonuses ship their text with the qlog entry; unheard ones stay
+// off the wire (spoiler gate) until scored late from review.
+
+const qlogSlices = slice('function summarize', 'async function nextQuestion');
+const qlogPreamble = `
+var state, cur, qidMeta = {}, qlog = [], room = null;
+`;
+const json = o => JSON.parse(JSON.stringify(o));
+const BONUS_META = { leadin: 'L', parts: ['p1', 'p2', 'p3'], answers: ['a1', 'a2', 'a3'] };
+
+function qlogHarness({ heard }) {
+  const ctx = vm.createContext({ reduce, liveLog });
+  vm.runInContext(qlogPreamble + qlogSlices, ctx);
+  let s = [
+    { type: 'player_join', player: 'A1', team: 'Red' },
+    { type: 'question_start', qid: 't1', powerIdx: null, unitCount: 10 },
+    { type: 'buzz', player: 'A1', unitIdx: 3 },
+    { type: 'verdict', result: 'correct' },
+  ].reduce(reduce, initialState({}));
+  if (heard) s = reduce(s, { type: 'bonus_part', qid: 't1', partIdx: 0, team: 'Red', points: 0 });
+  ctx.state = s;
+  ctx.cur = { q: { _id: 't1', question_sanitized: 'Q?', answer: 'A' } };
+  ctx.qidMeta = { t1: { label: 'Packet 1 · Tossup 1', bonus: BONUS_META } };
+  return ctx;
+}
+
+test('a heard bonus ships with the qlog entry; an unheard one stays off', () => {
+  const heard = qlogHarness({ heard: true });
+  heard.logQuestion();
+  assert.deepEqual(json(heard.qlog[0].bonus), BONUS_META);
+  const unheard = qlogHarness({ heard: false });
+  unheard.logQuestion();
+  assert.equal(unheard.qlog[0].bonus, undefined);
+  assert.ok(!('bonus' in json(unheard.qlog[0])), 'no bonus field on the wire');
+});
+
+test('refreshQlog attaches the bonus once review scores it late', () => {
+  const ctx = qlogHarness({ heard: false });
+  ctx.logQuestion();
+  ctx.state = reduce(ctx.state, { type: 'bonus_part', qid: 't1', partIdx: 0, team: 'Red', points: 10 });
+  ctx.refreshQlog('t1');
+  assert.deepEqual(json(ctx.qlog[0].bonus), BONUS_META);
+  assert.equal(ctx.qlog[0].summary, 'A1 +10 · Red bonus +10');
 });
