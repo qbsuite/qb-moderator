@@ -1,0 +1,138 @@
+// Session persistence, real-DOM edition: boots the ACTUAL index.html +
+// app.js in happy-dom, plays a question through real clicks, then
+// "refreshes" — a fresh window and fresh module instance sharing only
+// localStorage — and clicks Resume. Complements session.test.mjs
+// (sliced units) by exercising the full boot path, so a boot-time
+// error that would kill the resume row fails HERE, not at a game.
+// Skips when happy-dom is not installed (npm i).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+let Window = null;
+try { ({ Window } = await import('happy-dom')); } catch (e) { /* not installed */ }
+
+const APP = path.join(path.dirname(fileURLToPath(import.meta.url)), '../app');
+const html = Window ? fs.readFileSync(path.join(APP, 'index.html'), 'utf8') : '';
+
+const CATALOG = { sets: [{ slug: 'test-set', name: 'Test Set', year: 2024, difficulty: 3 }], tossups: { id: [], set: [] } };
+const SETDATA = {
+  name: 'Test Set',
+  packets: [{
+    number: 1,
+    tossups: [
+      { _id: 'q1', question_sanitized: 'Alpha beta gamma delta epsilon zeta', answer: 'Foo' },
+      { _id: 'q2', question_sanitized: 'Second question words here', answer: 'Bar' },
+    ],
+    bonuses: [
+      { _id: 'b1', leadin_sanitized: 'Lead', parts_sanitized: ['p1', 'p2', 'p3'], answers: ['a1', 'a2', 'a3'] },
+      { _id: 'b2', leadin_sanitized: 'Lead2', parts_sanitized: ['x', 'y', 'z'], answers: ['1', '2', '3'] },
+    ],
+  }],
+};
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let bootN = 0;
+
+// One boot = one "browser tab". sharedStorage is the only survivor
+// across boots, exactly like a refresh.
+async function boot(sharedStorage) {
+  bootN++;
+  const win = new Window({ url: 'https://example.test/app/index.html' });
+  win.document.write(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+  globalThis.window = win;
+  globalThis.document = win.document;
+  globalThis.localStorage = new Proxy({}, {
+    get: (t, k) => sharedStorage[k],
+    set: (t, k, v) => { sharedStorage[k] = String(v); return true; },
+    has: (t, k) => k in sharedStorage,
+  });
+  globalThis.fetch = (url) => {
+    const u = String(url);
+    if (u.includes('catalog.json')) return Promise.resolve({ ok: true, json: () => Promise.resolve(CATALOG) });
+    if (u.includes('/sets/test-set.json')) return Promise.resolve({ ok: true, json: () => Promise.resolve(SETDATA) });
+    return Promise.reject(new Error('no network in tests: ' + u));
+  };
+  try { Object.defineProperty(globalThis, 'navigator', { value: win.navigator, configurable: true }); } catch (e) {}
+  globalThis.location = win.location;
+  globalThis.Audio = function () {
+    return { preservesPitch: true, playbackRate: 1, currentTime: 0, duration: NaN, paused: true, src: '',
+      play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; },
+      load() {}, removeAttribute() {}, addEventListener() {} };
+  };
+  globalThis.WebSocket = class { constructor() { setTimeout(() => this.onopen && this.onopen(), 5); } send() {} close() {} };
+  globalThis.confirm = () => true;
+  globalThis.prompt = () => 'Kim';
+  // The app's save heartbeat (setInterval) would keep the test process
+  // alive forever; the saves we assert on all happen via render().
+  globalThis.setInterval = () => 0;
+  await import(pathToFileURL(path.join(APP, 'vendor/reveal_units.js')).href + '?b' + bootN);
+  await import(pathToFileURL(path.join(APP, 'sync.js')).href + '?b' + bootN);
+  await import(pathToFileURL(path.join(APP, 'app.js')).href + '?b' + bootN);
+  await sleep(40);   // let the catalog fetch settle
+  return { win, $: id => win.document.getElementById(id) };
+}
+
+async function playToReading($, mode) {
+  $('setlist').value = 'test-set';
+  await $('setlist').onchange();
+  $('modepick').value = mode;
+  $('packetpick').value = '0';
+  $('loadbtn').click();
+  await sleep(30);
+  $('startbtn').click();
+  await sleep(10);
+  $('addplayerq').click();   // prompt() -> Kim
+  await sleep(10);
+}
+
+const skip = !Window && 'happy-dom not installed (npm i)';
+
+test('refresh mid-game: resume restores the score and the live question', { skip }, async () => {
+  const store = {};
+  {
+    const { $ } = await boot(store);
+    await playToReading($, 'text');
+    const word = window.document.querySelector('#qtext .w');
+    word.click();                       // buzz on a word (full-text mode)
+    await sleep(10);
+    $('vcorrect').click();              // Kim +10
+    await sleep(10);
+    assert.ok(store.qbmodSession, 'session saved');
+  }
+  {
+    const { $ } = await boot(store);    // the refresh
+    assert.ok(!$('resumerow').classList.contains('hidden'), 'resume row shown');
+    assert.match($('resumelabel').textContent, /Test Set · Packet 1/);
+    await $('resumebtn').onclick();
+    await sleep(40);
+    assert.ok(!$('setsheet').classList.contains('open'), 'sheet closed');
+    assert.match($('setname').textContent, /Test Set/);
+    assert.match($('scoring').innerHTML, /Kim/);
+    assert.match($('qtext').textContent, /Alpha beta/);
+  }
+});
+
+test('refresh mid-adjudication: the pending buzz survives and verdicts', { skip }, async () => {
+  const store = {};
+  {
+    const { $ } = await boot(store);
+    await playToReading($, 'reveal');
+    $('buzz').click();
+    await sleep(10);
+    assert.ok(JSON.parse(store.qbmodSession).pendingBuzz, 'pending buzz saved');
+  }
+  {
+    const { $, win } = await boot(store);
+    await $('resumebtn').onclick();
+    await sleep(40);
+    assert.ok(!$('adjrow').classList.contains('hidden'), 'adjudication row restored');
+    assert.ok(win.document.querySelector('header').classList.contains('buzzed'), 'buzz header restored');
+    $('vcorrect').click();
+    await sleep(10);
+    assert.match($('scoring').innerHTML, /Kim/);
+    assert.ok(!$('anspanel').classList.contains('hidden'), 'question done after verdict');
+  }
+});

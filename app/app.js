@@ -1175,6 +1175,7 @@ function renderMain() {
   }
 
   const pending = !!cur.pending;
+  $('shortcuts').classList.toggle('hidden', !pending);
   $('startbtn').classList.toggle('hidden', !pending);
   $('startbtn').disabled = !!cur.starting;
   $('restartbtn').classList.toggle('hidden', pending || cur.mode !== 'audio' || phase !== 'reading');
@@ -1405,7 +1406,7 @@ function renderReview() {
   $('anspanel').classList.remove('hidden');
   $('anspanel').innerHTML = '<span class="lbl">Answer</span> ' + (q.answer || '');
   for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn',
-                    'progress', 'speedctl', 'ratectl', 'adjrow']) $(id).classList.add('hidden');
+                    'progress', 'speedctl', 'ratectl', 'adjrow', 'shortcuts']) $(id).classList.add('hidden');
   $('nextbtn').classList.remove('hidden');
   $('nextbtn').disabled = false;
   $('prevbtn').classList.toggle('hidden', i <= 0);
@@ -1570,6 +1571,12 @@ function renderScoring() {
     // With a pending buzz, tapping a player's name marks them as the buzzer.
     row.querySelector('.pname').onclick = () => {
       if (pendingBuzz && eligible().includes(p)) { selPlayer = p; render(); }
+    };
+    // Right-click the buzzer's row: undo the buzz (clear, no trace).
+    row.oncontextmenu = e => {
+      if (!pendingBuzz || (selPlayer && selPlayer !== p)) return;
+      e.preventDefault();
+      showMenu(e.clientX, e.clientY, [{ label: 'undo buzz', run: clearBuzz }]);
     };
     row.querySelector('.handle').onpointerdown = e => startDrag(e, p, row);
   }
@@ -1740,7 +1747,7 @@ function renderPacketDone(first = true) {
   $('bonuspanel').classList.add('hidden');
   $('adjrow').classList.add('hidden');
   $('reviewlines').classList.add('hidden');
-  for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn']) $(id).classList.add('hidden');
+  for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn', 'shortcuts']) $(id).classList.add('hidden');
   $('prevbtn').classList.toggle('hidden', tuIdx <= 0);   // review still works
   $('undobtn').classList.toggle('hidden', !undoStack.length);
   renderHeader(); renderScoring(); renderHistory();
@@ -1749,9 +1756,14 @@ function renderPacketDone(first = true) {
 }
 
 // ---------- boot ----------
-// The audio position moves without renders, so flush a save on the way
-// out — a mid-question refresh resumes at the moment of the refresh.
+// The audio/reveal position moves without renders, so flush a save on
+// the way out (refresh), on tab-hide (mobile, crashes), and on a slow
+// heartbeat — a mid-question refresh resumes at the moment it left.
 window.addEventListener('beforeunload', saveSession);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveSession();
+});
+setInterval(saveSession, 5000);
 
 const savedSession = loadSession();
 if (savedSession) {
@@ -1760,8 +1772,16 @@ if (savedSession) {
     + (savedSession.room ? ' · 🌐 ' + savedSession.room.code : '');
   $('resumebtn').onclick = async () => {
     $('resumebtn').disabled = true;
-    try { await resumeSession(savedSession); }
-    finally { $('resumebtn').disabled = false; }
+    try {
+      await resumeSession(savedSession);
+    } catch (e) {
+      // Never fail silently: the sheet is still open, put the reason
+      // where the eye already is.
+      $('setstatus').textContent = 'Resume failed: ' + (e && e.message || e);
+      console.error('resume failed', e);
+    } finally {
+      $('resumebtn').disabled = false;
+    }
   };
 }
 

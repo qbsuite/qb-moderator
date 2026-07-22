@@ -1,0 +1,10 @@
+{
+  "name": "qb-moderator",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "happy-dom": "^15.11.7"
+  }
+}
