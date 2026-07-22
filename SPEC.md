@@ -118,7 +118,9 @@ exists, the host reads the part aloud without seeing the answer) and
 off in full-text mode; a ⚙ setting (`auto`/`hidden`/`shown`,
 persisted) overrides the mode default, captured per bonus. Team panels
 show `bonus +X · ppb Y.Y`; player rows show a `powers/gets/negs` stat
-line (tossup-only scores). A **heard** bonus (any part logged) ships
+line (tossup-only scores). While a bonus is up, the display snapshot
+carries the controlling team/player as `bonus`, and room players' buzz
+buttons read `Red · bonus`. A **heard** bonus (any part logged) ships
 its text + answers with the question's qlog entry, so room players'
 Past Questions include it; unheard bonuses stay off the wire until
 review scores them late (they can still be read aloud — no spoilers).
@@ -126,6 +128,14 @@ Tested in `tests/bonus.test.mjs` (sliced real handlers + real engine).
 The roster UI exposes per-player point buttons (pointPad + 0): during
 reading they capture buzz + verdict in one tap; otherwise they're direct
 `award` adjustments.
+
+**Power tiers on a host-read clock**: with a power mark in the question
+and mode full-text or reveal (the moderator reads aloud, so the
+on-screen position is approximate), a correct verdict needs an explicit
+tier — the ✓ becomes +15/+10 buttons (+20 first when superpowers are
+on) and a checker accept only fills the adjudication field instead of
+auto-scoring. TTS-audio mode keeps auto verdicts (the audio clock IS
+the position). Tested in `tests/answers.test.mjs`.
 
 **Clear** (adjudication row, next to ✓/✗): drops a pending buzz with no
 engine events at all — no verdict, no score line, no lockout (buzzer

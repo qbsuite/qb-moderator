@@ -335,6 +335,8 @@ function handleRemoteAnswer(name, text) {
   if (v.directive === 'prompt') {
     room.send({ t: 'answer_result', name, result: 'prompt', prompt: v.directedPrompt ?? null });
     render();
+  } else if (v.directive === 'accept' && powerChoices()) {
+    render();   // powered host-read clock: the host picks the tier (+15/+10)
   } else {
     applyVerdict(v.directive === 'accept' ? 'correct' : 'wrong');
   }
@@ -348,6 +350,7 @@ function buildSnapshot() {
   const lockouts = state.current ? state.current.lockouts : [];
   return {
     label: cur ? (qidMeta[cur.q._id]?.label || '') : '',
+    bonus: bonusActive() ? bonusTeamLabel() : null,
     teams: teamList.map(t => ({
       name: t, score: tTotals[t] ?? 0,
       bonus: bstats.teams[t]?.points ?? 0,
@@ -828,6 +831,18 @@ function applyVerdict(result, points = null, noUndo = false) {
   render();
 }
 
+// With power marks but a host-read clock (full-text and reveal modes:
+// the moderator reads aloud, so the on-screen position is approximate),
+// a correct verdict can't derive its tier — the host picks it. Returns
+// the point choices ([20,] 15, 10) or null when auto-scoring is fine.
+function powerChoices() {
+  if (!cur || cur.mode === 'audio' || !state.config.scoring) return null;
+  if (!state.current || state.current.powerIdx == null) return null;
+  const p = state.config.points;
+  const sp = state.current.superpowerIdx != null && p.superpower != null ? [p.superpower] : [];
+  return [...sp, p.power, p.get];
+}
+
 // Clear a pending buzz as if it never happened: no verdict, no score
 // line, no lockout — buzzer checks, accidental taps. The buzz's undo
 // mark goes with it (the voided-buzz pattern); the buzzer's phone
@@ -1015,6 +1030,13 @@ function renderMain() {
   if (pendingBuzz) {
     $('givenanswer').classList.toggle('hidden', !$('optChecker').checked);
     const dis = !selPlayer;
+    const tiers = powerChoices();
+    $('vtiers').innerHTML = !tiers ? '' : tiers.map(v =>
+      `<button class="good" data-v="${v}" ${dis ? 'disabled' : ''}>+${v}</button>`).join('');
+    for (const b of $('vtiers').querySelectorAll('button')) {
+      b.onclick = () => applyVerdict('correct', +b.dataset.v);
+    }
+    $('vcorrect').classList.toggle('hidden', !!tiers);
     $('vcorrect').disabled = dis;
     $('vwrong').disabled = dis;
     renderSuggestion();

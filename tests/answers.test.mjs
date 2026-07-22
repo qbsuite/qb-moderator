@@ -62,7 +62,9 @@ function harness({ checker = true, unitIdx = 5, powerIdx = 10 } = {}) {
     { type: 'player_join', player: 'Kim' }),
     { type: 'player_join', player: 'Sam' }),
     { type: 'question_start', qid: 'q1', powerIdx, unitCount: 40 });
-  ctx.cur = { q: { _id: 'q1', answer: ANSWERLINE }, mode: 'reveal', unitIdx };
+  // audio: the position clock is trusted, so checker verdicts auto-score
+  // (text/reveal + powers instead require the host tier pick — below)
+  ctx.cur = { q: { _id: 'q1', answer: ANSWERLINE }, mode: 'audio', unitIdx };
   ctx.els.optChecker.checked = checker;
   return ctx;
 }
@@ -183,6 +185,32 @@ test('clear is a no-op while the buzz window is still resolving', () => {
   assert.equal(ctx.sent.length, 0);
   ctx.handleRemoteBuzz('Kim');
   assert.equal(ctx.selPlayer, 'Kim');
+});
+
+test('powered host-read clock: typed accept waits for the host tier pick', () => {
+  const ctx = harness();
+  ctx.cur.mode = 'reveal';
+  ctx.handleRemoteBuzzPending('Kim');
+  ctx.handleRemoteBuzz('Kim');
+  ctx.handleRemoteAnswer('Kim', 'Paris');
+  assert.equal(ctx.state.phase, 'reading', 'not auto-scored');
+  assert.equal(ctx.els.givenanswer.value, 'Paris');
+  assert.equal(ctx.sent.length, 0, 'no verdict to the phone yet');
+  ctx.applyVerdict('correct', 15);
+  assert.equal(scores(ctx.state).Kim, 15);
+  assert.equal(ctx.state.log[0].kind, 'power');
+  assert.deepEqual(json(ctx.sent.at(-1)), { t: 'answer_result', name: 'Kim', result: 'correct' });
+});
+
+test('powerChoices: tiers only with powers and a host-read clock', () => {
+  const ctx = harness();
+  ctx.cur.mode = 'text';
+  assert.deepEqual(json(ctx.powerChoices()), [15, 10]);
+  ctx.cur.mode = 'audio';
+  assert.equal(ctx.powerChoices(), null);
+  const noPower = harness({ powerIdx: null });
+  noPower.cur.mode = 'text';
+  assert.equal(noPower.powerChoices(), null);
 });
 
 test('checker off: the answer fills the host field, no auto verdict', () => {

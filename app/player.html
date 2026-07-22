@@ -515,7 +515,11 @@ document.addEventListener('keyup', e => {
 
 function renderBuzz() {
   const b = $('bigbuzz');
-  if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
+  const bonus = snapshot && snapshot.bonus;
+  // The bonus display outranks a stale YOU BUZZED: once the snapshot
+  // says a bonus is up, the tossup is settled on every phone.
+  if (bonus) { b.className = 'other'; b.textContent = bonus + ' · bonus'; }
+  else if (mineBuzz) { b.className = 'mine'; b.textContent = 'YOU BUZZED'; }
   else if (lastBuzzer) { b.className = 'other'; b.textContent = lastBuzzer + ' buzzed'; }
   else if (sentBuzz) { b.className = 'mine'; b.textContent = 'BUZZED'; }
   else if (amLocked()) { b.className = 'locked'; b.textContent = 'locked out'; }
