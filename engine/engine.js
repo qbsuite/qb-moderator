@@ -232,7 +232,18 @@ export function reduce(state, event) {
       }
       current = { ...current, lockouts: [...locked] };
     }
-    return { ...state, log, current };
+    // If the retraction removed whatever ENDED the current question — a
+    // winning buzz, a dead call, or the last exhausting lockout — the
+    // question reopens (clocks stay paused until the host acts).
+    let phase = state.phase;
+    if (current && target.qid === current.qid && phase === 'done') {
+      const stillEnded = log.some(e => !e.retracted && e.qid === current.qid
+          && (e.kind === 'superpower' || e.kind === 'power' || e.kind === 'get' || e.kind === 'dead'))
+        || (current.readingFinished && state.players.length > 0
+            && state.players.every(p => current.lockouts.includes(p)));
+      if (!stillEnded) phase = 'reading';
+    }
+    return { ...state, phase, log, current };
   }
 
   if (type === 'question_start') {

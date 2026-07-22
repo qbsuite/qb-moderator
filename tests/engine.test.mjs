@@ -503,3 +503,31 @@ test('a retracted bonus line un-hears the bonus and frees the supersede slot', (
   s = reduce(s, { type: 'bonus_part', qid: 'q1', partIdx: 0, team: 'Red', points: 10 });
   assert.equal(bonusStats(s).teams.Red.points, 10);
 });
+
+test('retracting the current question\'s winning line reopens it', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' });
+  assert.equal(s.phase, 'done');
+  s = reduce(s, { type: 'retract', entryIdx: 0 });
+  assert.equal(s.phase, 'reading', 'question reopens');
+  s = play(s,
+    { type: 'buzz', player: 'B', unitIdx: 25 },
+    { type: 'verdict', result: 'correct' });
+  assert.equal(scores(s).B, 10);
+  assert.equal(scores(s).A, 0);
+});
+
+test('retracting a neg keeps the question done while a winner stands', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 5 },
+    { type: 'verdict', result: 'wrong' },
+    { type: 'buzz', player: 'B', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' });
+  s = reduce(s, { type: 'retract', entryIdx: 0 });
+  assert.equal(s.phase, 'done');
+  assert.equal(scores(s).B, 10);
+  assert.deepEqual(s.current.lockouts, []);
+});

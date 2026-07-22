@@ -162,6 +162,78 @@ test('review: undo a scored buzz (right-click) and redo it for another player', 
   assert.ok(!/Kim/.test($('histlist').innerHTML), 'voided line gone from history');
 });
 
+test('after a refresh, row right-click still undoes a scored buzz (retract fallback)', { skip }, async () => {
+  const store = {};
+  {
+    const { $, win } = await boot(store);
+    await playToReading($, 'text');
+    win.document.querySelector('#qtext .w').click();
+    await sleep(10);
+    $('vcorrect').click();                 // Kim +10, question done
+    await sleep(10);
+  }
+  {
+    const { $, win } = await boot(store);  // refresh: undo stack is gone
+    await $('resumebtn').onclick();
+    await sleep(40);
+    const row = [...win.document.querySelectorAll('.prow')].find(r => r.dataset.p === 'Kim');
+    assert.match(row.querySelector('.pscore').textContent, /10/);
+    row.oncontextmenu({ preventDefault() {}, clientX: 5, clientY: 5 });
+    const menu = win.document.getElementById('ctxmenu');
+    assert.ok(menu, 'undo menu opens');
+    assert.match(menu.textContent, /undo get/);
+    menu.querySelector('button').click();
+    await sleep(10);
+    const row2 = [...win.document.querySelectorAll('.prow')].find(r => r.dataset.p === 'Kim');
+    assert.match(row2.querySelector('.pscore').textContent, /^0$/, 'score undone without the stack');
+    assert.ok(!/Kim/.test($('histlist').innerHTML), 'history clean');
+  }
+});
+
+test('after a refresh, undoing a neg releases the lockout', { skip }, async () => {
+  const store = {};
+  {
+    const { $ } = await boot(store);
+    await playToReading($, 'reveal');
+    $('buzz').click();
+    await sleep(10);
+    $('vwrong').click();                   // Kim -5 + lockout
+    await sleep(10);
+  }
+  {
+    const { $, win } = await boot(store);
+    await $('resumebtn').onclick();
+    await sleep(40);
+    const row = [...win.document.querySelectorAll('.prow')].find(r => r.dataset.p === 'Kim');
+    assert.ok(row.classList.contains('locked'), 'lockout survived the refresh');
+    row.oncontextmenu({ preventDefault() {}, clientX: 5, clientY: 5 });
+    win.document.getElementById('ctxmenu').querySelector('button').click();
+    await sleep(10);
+    const row2 = [...win.document.querySelectorAll('.prow')].find(r => r.dataset.p === 'Kim');
+    assert.ok(!row2.classList.contains('locked'), 'lockout released');
+    assert.match(row2.querySelector('.pscore').textContent, /^0$/);
+  }
+});
+
+test('clicking a tossup header in the history jumps review there', { skip }, async () => {
+  const { $, win } = await boot({});
+  await playToReading($, 'text');
+  win.document.querySelector('#qtext .w').click();
+  await sleep(10);
+  $('vcorrect').click();                   // q1 done
+  await sleep(10);
+  $('nextbtn').click();                    // q2 reading
+  await sleep(30);
+  $('deadbtn').click();                    // q2 done
+  await sleep(10);
+  const head = win.document.querySelector('#histlist .tuhead[data-qid]');
+  assert.ok(head, 'history has a clickable header');
+  head.onclick();
+  await sleep(10);
+  assert.match($('modeline').textContent, /review/);
+  assert.ok(win.document.querySelector('#reviewlines .rline'), 'review shows q1 lines');
+});
+
 test('refresh mid-adjudication: the pending buzz survives and verdicts', { skip }, async () => {
   const store = {};
   {

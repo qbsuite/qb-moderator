@@ -1209,8 +1209,10 @@ function renderMain() {
   $('deadbtn').classList.toggle('hidden', pending || phase === 'done' || phase === 'idle');
   $('nextbtn').classList.toggle('hidden', !packet);
   $('nextbtn').disabled = false;
+  // ◂ stays visible alongside Next; it enables between questions.
   const canReview = tuIdx > 0 && phase !== 'reading' && phase !== 'buzzed' && !pendingBuzz;
-  $('prevbtn').classList.toggle('hidden', !canReview);
+  $('prevbtn').classList.remove('hidden');
+  $('prevbtn').disabled = !canReview;
 
   // The buzz button: armed while reading (except full-text mode, where
   // clicking the buzzed word replaces it); red while adjudicating.
@@ -1431,6 +1433,7 @@ function renderReview() {
   $('nextbtn').classList.remove('hidden');
   $('nextbtn').disabled = false;
   $('prevbtn').classList.toggle('hidden', i <= 0);
+  $('prevbtn').disabled = false;
   renderReviewLines(q._id);
   renderReviewBonus(i, q._id);
 }
@@ -1707,7 +1710,7 @@ function renderHistory() {
     if (e.kind === 'bonus') continue;
     if (e.qid && e.qid !== lastQid) {
       lastQid = e.qid;
-      rows.push(`<div class="tuhead">${esc(qidMeta[e.qid]?.label || 'Tossup')}</div>`);
+      rows.push(`<div class="tuhead" data-qid="${esc(e.qid)}">${esc(qidMeta[e.qid]?.label || 'Tossup')}</div>`);
     }
     const cls = e.points > 0 ? 'good' : e.points < 0 ? 'bad' : '';
     const marks = e.qid && carrier.get(e.qid) === e && bonuses.has(e.qid)
@@ -1726,6 +1729,9 @@ function renderHistory() {
   }
   const el = $('histlist');
   el.innerHTML = rows.join('');
+  for (const h of el.querySelectorAll('.tuhead[data-qid]')) {
+    h.onclick = () => jumpToReview(h.dataset.qid);
+  }
   for (const li of el.querySelectorAll('li[data-e]')) {
     li.oncontextmenu = ev => {
       ev.preventDefault();
@@ -1739,9 +1745,35 @@ function renderHistory() {
 
 // Undo back through the action that produced log entry logIdx: replays
 // the undo stack until that line (and everything after it) is gone.
-// Roster and settings events survive each level, as with ctrl+z.
+// Roster and settings events survive each level, as with ctrl+z. The
+// stack does not survive a refresh — when it can't reach, fall back to
+// surgically retracting that line and everything after it: scores,
+// stats, lockouts, and the question's phase all re-derive.
 function undoThrough(logIdx) {
   while (undoStack.length && state.log.length > logIdx) undo();
+  if (!state.log.slice(logIdx).some(e => !e.retracted)) return;
+  pushUndo();
+  const qids = new Set();
+  for (let i = state.log.length - 1; i >= logIdx; i--) {
+    if (state.log[i].retracted) continue;
+    if (state.log[i].qid) qids.add(state.log[i].qid);
+    apply({ type: 'retract', entryIdx: i });
+  }
+  // A retracted bonus restarts its cycle if the question is re-won.
+  if (cur && qids.has(cur.q._id)) { cur.bonus = null; $('bonuspanel').dataset.for = ''; }
+  for (const qid of qids) refreshQlog(qid);
+  render();
+}
+
+// Click a tossup header in the history sidebar: jump review there.
+function jumpToReview(qid) {
+  if (!packet) return;
+  if (state.phase === 'reading' || state.phase === 'buzzed' || pendingBuzz) return;
+  const idx = packet.tossups.findIndex(t => t._id === qid);
+  if (idx < 0 || idx >= Math.min(tuIdx, packet.tossups.length)) return;
+  review = { idx };
+  $('bonuspanel').dataset.for = '';
+  render();
 }
 
 // ---------- roster editor: bulk team/player entry ----------
@@ -1805,6 +1837,7 @@ function renderPacketDone(first = true) {
   $('reviewlines').classList.add('hidden');
   for (const id of ['buzz', 'startbtn', 'restartbtn', 'playbtn', 'finishedbtn', 'deadbtn', 'nextbtn', 'shortcuts']) $(id).classList.add('hidden');
   $('prevbtn').classList.toggle('hidden', tuIdx <= 0);   // review still works
+  $('prevbtn').disabled = false;
   $('undobtn').classList.toggle('hidden', !undoStack.length);
   renderHeader(); renderScoring(); renderHistory();
   saveSession();
