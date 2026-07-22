@@ -100,6 +100,18 @@
   .buzzbtn.buzzed { background: var(--bad); border-color: var(--bad); color: #fff; }
   .progress { height: 4px; background: var(--input); border-radius: 2px; margin-top: 0.5rem; }
   .progress i { display: block; height: 100%; width: 0; background: var(--link); border-radius: 2px; }
+  .shortcard { margin-top: 0.9rem; max-width: 30rem; background: var(--raised);
+    border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 1rem 0.8rem; }
+  .shortcard h4 { margin: 0 0 0.45rem; font-size: 0.78rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--faint); font-weight: 600; }
+  .shortcard .sgrid { color: var(--muted); font-size: 0.9rem; display: grid;
+    grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; align-items: baseline; }
+  .shortcard .keys { text-align: right; }
+  .shortcard .note { color: var(--faint); font-size: 0.82rem; }
+  kbd { font: 0.82rem ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: var(--bright); background: var(--input); border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 5px; padding: 0.06rem 0.42rem;
+    white-space: nowrap; }
   .adjrow { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
     margin-top: 0.6rem; max-width: 46rem; }
   .adjrow input { flex: 1; min-width: 10rem; padding: 0.5rem 0.7rem; }
@@ -211,9 +223,9 @@
     <span class="grow"></span>
     <button class="hbtn" id="setbtn">📦 Set</button>
     <select class="hbtn" id="modepick" title="Reading mode">
-      <option value="reveal" selected>Word-by-word reveal</option>
+      <option value="reveal">Word-by-word reveal</option>
       <option value="audio">♪ TTS audio</option>
-      <option value="text">Full text (I read)</option>
+      <option value="text" selected>Full text (I read)</option>
     </select>
     <button class="hbtn" id="roombtn">🌐 Room</button>
     <button class="hbtn" id="rosterbtn">👥 Players</button>
@@ -227,6 +239,16 @@
     <div class="anspanel hidden" id="anspanel"></div>
     <div class="reviewlines hidden" id="reviewlines"></div>
     <div class="bonus hidden" id="bonuspanel"></div>
+    <div class="shortcard hidden" id="shortcuts">
+      <h4>Shortcuts</h4>
+      <div class="sgrid">
+        <span class="keys"><kbd>space</kbd></span><span>buzz · advance bonus reveal</span>
+        <span class="keys"><kbd>1</kbd>–<kbd>9</kbd></span><span>mark bonus parts</span>
+        <span class="keys"><kbd>ctrl</kbd>+<kbd>z</kbd></span><span>undo</span>
+        <span class="keys">click a word</span><span>buzz at that word <span class="note">Full text mode</span></span>
+        <span class="keys">right-click <b>BUZZ</b></span><span>undo the buzz</span>
+      </div>
+    </div>
     <div class="controls" id="controls">
       <button class="buzzbtn hidden" id="startbtn">Start</button>
       <button class="buzzbtn hidden" id="buzz">BUZZ (space)</button>
@@ -265,6 +287,11 @@
 <div class="sheet" id="setsheet">
   <div class="card">
     <h3>Set &amp; packet</h3>
+    <div class="srow hidden" id="resumerow"
+      style="border-bottom:1px solid var(--border);padding-bottom:0.6rem;margin-bottom:0.4rem">
+      <span class="muted" id="resumelabel" style="flex:1"></span>
+      <button class="primary" id="resumebtn">Resume</button>
+    </div>
     <input type="text" id="setsearch" placeholder="Search sets…" autocomplete="off" style="width:100%">
     <select id="setlist" size="8"></select>
     <div class="srow" style="margin-top:0.5rem">
@@ -272,9 +299,9 @@
     </div>
     <div class="srow">
       <select id="modepick2" title="Reading mode" style="flex:1">
-        <option value="reveal" selected>Word-by-word reveal</option>
+        <option value="reveal">Word-by-word reveal</option>
         <option value="audio">♪ TTS audio</option>
-        <option value="text">Full text (I read)</option>
+        <option value="text" selected>Full text (I read)</option>
       </select>
     </div>
     <div class="srow" style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.6rem">

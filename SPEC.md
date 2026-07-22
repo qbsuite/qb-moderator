@@ -159,6 +159,16 @@ red buzz button offers "undo buzz" (= Clear), and any history line
 offers "undo from here" — the stack replays until that line and
 everything after it is gone. Tested in `tests/undo.test.mjs`.
 
+**Session persistence** (survive a host refresh): the whole session —
+engine event log, packet position, the live question, a pending buzz,
+the room code — saves to localStorage after every host action (plus a
+`beforeunload` flush for the live audio position) and rebuilds by
+replay via a Resume row in the set sheet (12h TTL, matching the room).
+Rejoining the room is just the normal host reconnect, so this costs
+zero extra server traffic. Mid-question resumes come back paused at
+the saved position (undo semantics); the undo stack is the one thing
+that does not survive. Tested in `tests/session.test.mjs`.
+
 **Review** (browse previous questions): ◂ steps back through the
 current packet's completed tossups (between questions only; ▸ returns
 toward the live one). A reviewed question shows its full text +

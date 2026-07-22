@@ -30,7 +30,9 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ---------- app state ----------
 let CAT = null;            // catalog.json
 let SET = null;            // sets/{slug}.json payload
+let setSlug = null;        // R2 slug (null for uploaded packets)
 let packet = null;         // current packet {number, tossups, bonuses}
+let packetIdx = -1;        // index into SET.packets
 let packetLabel = '';      // "Packet 7"
 let tuIdx = -1;            // index into packet.tossups
 let state = initialState({});
@@ -177,37 +179,41 @@ $('roombtn').onclick = async () => {
   }
   $('roombtn').disabled = true;
   try {
-    const code = await createRoom();
-    room = connectHost(code, {
-      onBuzz: handleRemoteBuzz,
-      onBuzzPending: handleRemoteBuzzPending,
-      onAnswer: handleRemoteAnswer,
-      onJoin: name => {
-        connected.add(name);
-        if (name && !state.players.includes(name)) {
-          dispatch({ type: 'player_join', player: name, team: null });
-        } else render();
-      },
-      onLeave: name => { connected.delete(name); render(); },
-      onOpen: () => {   // resync after (re)connect
-        roomArmed = null;
-        room.send({ t: 'qlog', qlog });
-        // Audio broadcast recovery: the DO holds no audio state beyond
-        // the manifest, so re-seed the clock samples, the manifest, and
-        // (mid-question) the phones' position.
-        for (let i = 0; i < 3; i++) setTimeout(() => room && room.send({ t: 'sync', c: Date.now() }), i * 150);
-        sendAudioManifest();
-        if (broadcasting() && !cur.pending) room.send(buildAudioState());
-        render();
-      },
-      onMessage: handleRoomAudioMessage,
-    });
-    $('roombtn').textContent = '🌐 ' + code;
-    $('roombtn').title = 'Click to copy the player join link';
+    hostRoom(await createRoom());
   } finally {
     $('roombtn').disabled = false;
   }
 };
+
+// Connect (or reconnect — session resume) as the host of room `code`.
+function hostRoom(code, server) {
+  room = connectHost(code, {
+    onBuzz: handleRemoteBuzz,
+    onBuzzPending: handleRemoteBuzzPending,
+    onAnswer: handleRemoteAnswer,
+    onJoin: name => {
+      connected.add(name);
+      if (name && !state.players.includes(name)) {
+        dispatch({ type: 'player_join', player: name, team: null });
+      } else render();
+    },
+    onLeave: name => { connected.delete(name); render(); },
+    onOpen: () => {   // resync after (re)connect
+      roomArmed = null;
+      room.send({ t: 'qlog', qlog });
+      // Audio broadcast recovery: the DO holds no audio state beyond
+      // the manifest, so re-seed the clock samples, the manifest, and
+      // (mid-question) the phones' position.
+      for (let i = 0; i < 3; i++) setTimeout(() => room && room.send({ t: 'sync', c: Date.now() }), i * 150);
+      sendAudioManifest();
+      if (broadcasting() && !cur.pending) room.send(buildAudioState());
+      render();
+    },
+    onMessage: handleRoomAudioMessage,
+  }, server || undefined);
+  $('roombtn').textContent = '🌐 ' + code;
+  $('roombtn').title = 'Click to copy the player join link';
+}
 
 // Close the room: everyone is told (players' phones return to the join
 // screen), the DO wipes, and the code returns to the pool. The send
@@ -467,6 +473,7 @@ $('setlist').onchange = async () => {
   const slug = $('setlist').value;
   $('setstatus').textContent = 'Loading set…';
   SET = await fetch(QDATA_BASE + '/sets/' + slug + '.json').then(r => r.json());
+  setSlug = slug;
   $('packetpick').innerHTML = SET.packets.map((p, i) =>
     `<option value="${i}">Packet ${p.number ?? i + 1}${p.name ? ' — ' + esc(p.name) : ''} (${p.tossups.length} TU)</option>`).join('');
   const withAudio = SET.packets.flatMap(p => p.tossups).filter(t => audio.hasAudio(t._id)).length;
@@ -476,8 +483,9 @@ $('setlist').onchange = async () => {
 };
 
 $('loadbtn').onclick = () => {
-  packet = SET.packets[+$('packetpick').value];
-  packetLabel = 'Packet ' + (packet.number ?? +$('packetpick').value + 1);
+  packetIdx = +$('packetpick').value;
+  packet = SET.packets[packetIdx];
+  packetLabel = 'Packet ' + (packet.number ?? packetIdx + 1);
   tuIdx = -1;
   sendAudioManifest();   // phones start downloading the whole packet now
   $('setsheet').classList.remove('open');
@@ -544,6 +552,7 @@ $('upload').onchange = async () => {
     });
   }
   SET = { name: files.length === 1 ? packets[0].name : `Uploaded (${files.length} packets)`, packets };
+  setSlug = null;
   $('packetpick').innerHTML = SET.packets.map((p, i) =>
     `<option value="${i}">Packet ${p.number}${p.name ? ' — ' + esc(p.name) : ''} (${p.tossups.length} TU)</option>`).join('');
   const tus = packets.reduce((n, p) => n + p.tossups.length, 0);
@@ -697,17 +706,24 @@ function beginReading(qid) {
   dispatch({ type: 'question_start', qid: cur.q._id, powerIdx: cur.powerIdx,
              superpowerIdx: cur.superpowerIdx, unitCount: cur.units.length });
   if (cur.mode === 'audio') {
-    player.el.ontimeupdate = () => {
-      if (!cur || state.phase !== 'reading') return;
-      cur.unitIdx = cur.mapper(player.el.currentTime, player.el.duration);
-      renderProgress();
-    };
-    player.el.onended = () => dispatch({ type: 'reading_finished' });
+    attachAudioHandlers();
     player.play().catch(() => degradeToReveal());
   } else if (cur.mode === 'reveal') {
     scheduleReveal();
   }
   render();
+}
+
+// The shared audio element's clock/end handlers (set once per page —
+// they close over the module state, so they serve every question; a
+// session resume needs them re-attached after a refresh).
+function attachAudioHandlers() {
+  player.el.ontimeupdate = () => {
+    if (!cur || state.phase !== 'reading') return;
+    cur.unitIdx = cur.mapper(player.el.currentTime, player.el.duration);
+    renderProgress();
+  };
+  player.el.onended = () => dispatch({ type: 'reading_finished' });
 }
 
 function degradeToReveal() {
@@ -1011,6 +1027,100 @@ $('vwrong').onclick = () => applyVerdict('wrong');
 $('vclear').onclick = clearBuzz;
 $('givenanswer').oninput = renderSuggestion;
 
+// ---------- session persistence (survive a host refresh) ----------
+// Everything re-derives from the engine event log (event sourcing), so
+// the whole session — scores, packet position, the live question, even
+// a pending buzz — saves to localStorage after every action and
+// rebuilds by replay on load. Rejoining the room is indistinguishable
+// from the auto-reconnect after a network blip, so this costs zero
+// extra server traffic. The undo stack is the one thing that does not
+// survive a refresh. Mid-question resumes come back PAUSED at the
+// saved position (undo semantics): play / ⟲ to go on.
+const SESSION_KEY = 'qbmodSession';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;   // matches the room TTL
+
+function saveSession() {
+  if (!packet) return;
+  const pb = pendingBuzz && { ...pendingBuzz };
+  if (pb) delete pb.tentative;   // any buzz window resolved long ago
+  try {
+    localStorage[SESSION_KEY] = JSON.stringify({
+      v: 1, ts: Date.now(),
+      title: `${SET.name} · ${packetLabel} · TU ${Math.min(tuIdx + 1, packet.tossups.length)}/${packet.tossups.length}`,
+      set: setSlug ? { slug: setSlug } : { data: SET },
+      packetIdx, tuIdx, packetLabel,
+      mode: $('modepick').value,
+      events, teamList, qlog, qidMeta,
+      room: room ? { code: room.code, server: room.server } : null,
+      pendingBuzz: pb, selPlayer, controlling,
+      cur: cur && {
+        pending: !!cur.pending, mode: cur.mode, degraded: !!cur.degraded,
+        noAudio: !!cur.noAudio, unitIdx: cur.unitIdx,
+        audioTime: cur.mode === 'audio' ? player.el.currentTime : 0,
+        bonus: cur.bonus,
+      },
+    });
+  } catch (e) { /* quota: refresh persistence degrades, play continues */ }
+}
+
+function loadSession() {
+  try {
+    const s = JSON.parse(localStorage[SESSION_KEY] || 'null');
+    return s && s.v === 1 && Date.now() - s.ts < SESSION_TTL_MS ? s : null;
+  } catch (e) { return null; }
+}
+
+async function resumeSession(s) {
+  SET = s.set.slug
+    ? await fetch(QDATA_BASE + '/sets/' + s.set.slug + '.json').then(r => r.json())
+    : s.set.data;
+  setSlug = s.set.slug ?? null;
+  packetIdx = s.packetIdx;
+  packet = SET.packets[packetIdx];
+  packetLabel = s.packetLabel;
+  tuIdx = s.tuIdx;
+  $('modepick').value = s.mode;
+  $('modepick2').value = s.mode;
+  teamList = s.teamList || [];
+  qlog.length = 0;
+  qlog.push(...(s.qlog || []));
+  Object.assign(qidMeta, s.qidMeta || {});
+  events.length = 0;
+  events.push(...(s.events || []));
+  state = events.reduce(reduce, initialState({}));
+  $('optScoring').checked = state.config.scoring;
+  $('optSuper').checked = state.config.points.superpower != null;
+  controlling = s.controlling ?? null;
+  selPlayer = s.selPlayer ?? null;
+  pendingBuzz = s.pendingBuzz ?? null;
+  cur = null;
+  if (s.cur && tuIdx >= 0 && tuIdx < packet.tossups.length) {
+    const q = packet.tossups[tuIdx];
+    const { units, powerIdx, superpowerIdx } = questionUnits(q.question_sanitized || q.question || '');
+    cur = { q, units, powerIdx, superpowerIdx, mode: s.cur.mode, noAudio: !!s.cur.noAudio,
+            degraded: !!s.cur.degraded, pending: !!s.cur.pending, unitIdx: s.cur.unitIdx,
+            slow: s.cur.mode === 'reveal' ? slowSpans(units.map(u => u.t)) : null,
+            mapper: null, timer: null, bonus: s.cur.bonus ?? null };
+    if (cur.mode === 'audio') {
+      const c = cur;
+      c.mapper = await audio.positionMapper(q._id, units.length);
+      if (cur !== c) return;
+      player.load(q._id);
+      player.el.playbackRate = voiceRate();
+      player.el.onerror = () => degradeToReveal();
+      attachAudioHandlers();
+      const t = s.cur.audioTime || 0;
+      player.el.addEventListener('loadedmetadata', () => {
+        try { player.el.currentTime = t; } catch (e) { /* not seekable yet */ }
+      }, { once: true });
+    }
+  }
+  if (s.room) hostRoom(s.room.code, s.room.server);
+  $('setsheet').classList.remove('open');
+  if (tuIdx >= packet.tossups.length) { renderPacketDone(false); return; }
+  render();
+}
+
 // ---------- rendering ----------
 function render() {
   renderHeader();
@@ -1019,6 +1129,7 @@ function render() {
   renderMain();
   $('undobtn').classList.toggle('hidden', !undoStack.length);
   syncRoom();
+  saveSession();
 }
 
 function renderHeader() {
@@ -1633,7 +1744,25 @@ function renderPacketDone(first = true) {
   $('prevbtn').classList.toggle('hidden', tuIdx <= 0);   // review still works
   $('undobtn').classList.toggle('hidden', !undoStack.length);
   renderHeader(); renderScoring(); renderHistory();
+  saveSession();
   if (first) $('setsheet').classList.add('open');
+}
+
+// ---------- boot ----------
+// The audio position moves without renders, so flush a save on the way
+// out — a mid-question refresh resumes at the moment of the refresh.
+window.addEventListener('beforeunload', saveSession);
+
+const savedSession = loadSession();
+if (savedSession) {
+  $('resumerow').classList.remove('hidden');
+  $('resumelabel').textContent = savedSession.title
+    + (savedSession.room ? ' · 🌐 ' + savedSession.room.code : '');
+  $('resumebtn').onclick = async () => {
+    $('resumebtn').disabled = true;
+    try { await resumeSession(savedSession); }
+    finally { $('resumebtn').disabled = false; }
+  };
 }
 
 render();
