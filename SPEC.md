@@ -229,7 +229,13 @@ for late joiners.
   the following `{t:'buzz'}` may differ, so attribution waits for it
   while the clock pause does not.
 - host→DO: `{t:'state', snapshot}` (stored + fanned out),
-  `{t:'arm'}` / `{t:'disarm'}`, and `{t:'answer_result', name, result,
+  `{t:'arm'}` / `{t:'disarm'}`, `{t:'close'}` — end the room:
+  `{t:'closed'}` broadcast (players stop reconnecting and return to
+  their join screen), all sockets closed, storage wiped so the code
+  returns to the pool immediately (additive, July 2026 — old workers
+  ignore it and the host just leaves; the shared default instance
+  serves consensus-scorekeeper too, whose UIs add their own close
+  affordance) — and `{t:'answer_result', name, result,
   prompt?}` — broadcast verbatim. **Typed-answer flow**: the buzz
   winner's phone shows an answer input; the submitted text relays to
   the host, which runs the vendored checker — accept/reject score the

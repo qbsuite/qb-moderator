@@ -209,6 +209,31 @@ $('roombtn').onclick = async () => {
   }
 };
 
+// Close the room: everyone is told (players' phones return to the join
+// screen), the DO wipes, and the code returns to the pool. The send
+// gets a beat to flush before the local socket closes — on an old
+// worker (no close support) this degrades to just the host leaving.
+function closeRoom() {
+  if (!room || !confirm('Close the room? Players are disconnected.')) return;
+  const r = room;
+  room = null;
+  roomArmed = null;
+  connected.clear();
+  r.send({ t: 'close' });
+  setTimeout(() => r.close(), 300);
+  $('roombtn').textContent = '🌐 Room';
+  $('roombtn').title = '';
+  render();
+}
+$('roombtn').oncontextmenu = e => {
+  if (!room) return;
+  e.preventDefault();
+  showMenu(e.clientX, e.clientY, [
+    { label: 'copy player link', run: () => $('roombtn').onclick() },
+    { label: 'close room', run: closeRoom },
+  ]);
+};
+
 // First arrival at the server (buzz window just opened): stop the clock
 // NOW and pin the buzz position — the equalized winner may be someone
 // else and follows in handleRemoteBuzz within the window (<=200ms).
@@ -999,6 +1024,18 @@ function render() {
 function renderHeader() {
   $('setname').innerHTML = !packet ? 'no packet loaded'
     : `${esc(SET.name)} · ${esc(packetLabel)} · <b>TU ${Math.min(tuIdx + 1, packet.tossups.length)}</b>/${packet.tossups.length}`;
+  // Buzz takeover (settled via mockups: option D): while a buzz is
+  // being adjudicated the header turns red with the buzzer's name and
+  // the screen edge pulses — visible from across the room.
+  const buzzed = !!pendingBuzz && !review;
+  document.querySelector('header').classList.toggle('buzzed', buzzed);
+  document.body.classList.toggle('buzzglow', buzzed);
+  if (buzzed) {
+    const team = selPlayer && state.teams[selPlayer];
+    $('buzzhdr').innerHTML =
+      `<span class="bname">🔔 ${esc(selPlayer ? selPlayer + ' buzzed' : 'buzzed')}</span>`
+      + (team ? `<span class="bteam">${esc(team)}</span>` : '');
+  }
 }
 
 function renderMain() {

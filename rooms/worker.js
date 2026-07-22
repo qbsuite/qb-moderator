@@ -17,6 +17,8 @@
 //                  {t:'arm'} / {t:'disarm'} open/close the buzzers
 //                  {t:'answer_result', name, result, prompt?} verdict for a
 //                  typed answer, broadcast to everyone
+//                  {t:'close'}             end the room: {t:'closed'} broadcast,
+//                  sockets closed, storage wiped (code returns to the pool)
 //   DO -> client : {t:'welcome', snapshot, armed, roster}
 //                  {t:'join'|'leave', name, role}
 //                  {t:'buzz', name}        winning buzz, buzzers close
@@ -342,6 +344,16 @@ export class RoomDO {
     } else if (msg.t === 'disarm') {
       await this.ctx.storage.put('armed', false);
       this.broadcast({ t: 'disarm' }, ws);
+    } else if (msg.t === 'close') {
+      // Host ends the room: everyone hears it (players stop
+      // reconnecting), sockets close, storage wipes — the code returns
+      // to the pool immediately instead of waiting out the TTL.
+      this.broadcast({ t: 'closed' });
+      for (const s of this.ctx.getWebSockets()) {
+        try { s.close(1000, 'room closed'); } catch (e) { /* closing */ }
+      }
+      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.deleteAlarm();
     } else if (msg.t === 'answer_result') {
       // Verdict for a typed answer: the answering player renders it
       // (prompt reopens their input); everyone else sees the outcome.

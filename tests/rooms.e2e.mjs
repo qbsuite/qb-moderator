@@ -212,5 +212,16 @@ await fast.next(m => m.t === 'rejected', 'fast told it lost the window');
 ok('latency-equalized arbitration (high-RTT player wins a 25ms-later buzz)');
 fast.close(); slow.close(); host2.close();
 
+// --- close room ---
+// Host's {t:'close'}: {t:'closed'} broadcast so players stop
+// reconnecting, then the server drops every socket and wipes storage.
+host.sendJson({ t: 'close' });
+await p2.next(m => m.t === 'closed', 'p2 told the room closed');
+await Promise.all([
+  new Promise(r => { p2.onclose = r; }),
+  new Promise(r => { late.onclose = r; }),
+]);
+ok('close room ({t:closed} broadcast + sockets dropped)');
+
 console.log('ROOMS E2E: all passed');
 process.exit(0);

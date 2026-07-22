@@ -33,6 +33,22 @@
 
   header { display: flex; align-items: center; gap: 0.7rem;
     padding: 0.45rem 1.1rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  /* buzz takeover: the header turns red with the buzzer's name and the
+     screen edge pulses while a buzz is being adjudicated */
+  #buzzhdr { display: none; }
+  header.buzzed { background: var(--bad); border-color: var(--bad); }
+  header.buzzed > * { display: none; }
+  header.buzzed #buzzhdr { display: flex; width: 100%; align-items: baseline;
+    gap: 0.8rem; color: #fff; }
+  #buzzhdr .bname { font-size: 1.25rem; font-weight: 800; letter-spacing: 0.03em;
+    text-transform: uppercase; }
+  #buzzhdr .bteam { margin-left: auto; font-weight: 600; opacity: 0.9; }
+  body.buzzglow::after { content: ''; position: fixed; inset: 0; pointer-events: none;
+    z-index: 50; animation: buzzglow 1.2s infinite; }
+  @keyframes buzzglow {
+    0%, 100% { box-shadow: inset 0 0 0 4px var(--bad); }
+    50% { box-shadow: inset 0 0 0 4px rgba(224,85,85,0.2); }
+  }
   header h1 { font-size: 1rem; margin: 0; color: var(--bright); font-weight: 650; }
   header .setname { color: var(--muted); font-size: 0.88rem; }
   header .setname b { color: var(--bright); }
@@ -189,6 +205,7 @@
 <body>
 <div class="app">
   <header>
+    <span id="buzzhdr"></span>
     <h1>moderator</h1>
     <span class="setname" id="setname">no packet loaded</span>
     <span class="grow"></span>

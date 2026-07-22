@@ -179,6 +179,7 @@ function unlockAudio() {
 }
 
 function connect() {
+  closed = false;   // a fresh join after a closed room reconnects again
   const url = server.replace(/^http/, 'ws') +
     '/rooms/' + code + '/ws?role=player&name=' + encodeURIComponent(me);
   ws = new WebSocket(url);
@@ -260,6 +261,15 @@ function connect() {
         vibrate(80);
         answerBar('done', '<span class="bad">wrong</span>');
       } else answerBar(null);
+    }
+    else if (m.t === 'closed') {
+      // Host ended the room: stop reconnecting, back to the join screen.
+      closed = true;
+      audioStop();
+      try { ws.close(); } catch (err) {}
+      $('game').style.display = 'none';
+      $('join').style.display = '';
+      $('joinerr').textContent = 'room closed';
     }
     else if (m.t === 'rejected') { sentBuzz = false; renderBuzz(); }
     else if (m.t === 'state') { snapshot = m.snapshot; renderAll(); }
