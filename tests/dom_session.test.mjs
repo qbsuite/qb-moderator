@@ -64,7 +64,8 @@ async function boot(sharedStorage) {
   };
   globalThis.WebSocket = class { constructor() { setTimeout(() => this.onopen && this.onopen(), 5); } send() {} close() {} };
   globalThis.confirm = () => true;
-  globalThis.prompt = () => 'Kim';
+  const promptQueue = [];
+  globalThis.prompt = () => promptQueue.shift() ?? 'Kim';
   // The app's save heartbeat (setInterval) would keep the test process
   // alive forever; the saves we assert on all happen via render().
   globalThis.setInterval = () => 0;
@@ -72,7 +73,7 @@ async function boot(sharedStorage) {
   await import(pathToFileURL(path.join(APP, 'sync.js')).href + '?b' + bootN);
   await import(pathToFileURL(path.join(APP, 'app.js')).href + '?b' + bootN);
   await sleep(40);   // let the catalog fetch settle
-  return { win, $: id => win.document.getElementById(id) };
+  return { win, promptQueue, $: id => win.document.getElementById(id) };
 }
 
 async function playToReading($, mode) {
@@ -113,6 +114,51 @@ test('refresh mid-game: resume restores the score and the live question', { skip
     assert.match($('scoring').innerHTML, /Kim/);
     assert.match($('qtext').textContent, /Alpha beta/);
   }
+});
+
+test('review: undo a scored buzz (right-click) and redo it for another player', { skip }, async () => {
+  const { $, win, promptQueue } = await boot({});
+  await playToReading($, 'text');          // adds Kim
+  promptQueue.push('Sam');
+  $('addplayerq').click();                 // adds Sam
+  await sleep(10);
+  win.document.querySelector('#qtext .w').click();   // buzz (Kim preselected? no — pick)
+  await sleep(10);
+  // two eligible players: attribute to Kim by tapping her name
+  const rowOf = name => [...win.document.querySelectorAll('.prow')].find(r => r.dataset.p === name);
+  rowOf('Kim').querySelector('.pname').click();
+  await sleep(10);
+  $('vcorrect').click();                   // Kim +10 on q1 (the mistake)
+  await sleep(10);
+  assert.match(rowOf('Kim').querySelector('.pscore').textContent, /10/);
+
+  $('nextbtn').click();                    // q2 loads + reads
+  await sleep(30);
+  $('deadbtn').click();                    // q2 done -> review is allowed
+  await sleep(10);
+  $('prevbtn').click();                    // review q1
+  await sleep(10);
+  const line = win.document.querySelector('#reviewlines .rline');
+  assert.ok(line, 'review shows the score line');
+  assert.match(line.textContent, /Kim/);
+
+  // right-click -> undo buzz (retract)
+  line.oncontextmenu({ preventDefault() {}, clientX: 5, clientY: 5 });
+  win.document.getElementById('ctxmenu').querySelector('button').click();
+  await sleep(10);
+  assert.match(rowOf('Kim').querySelector('.pscore').textContent, /^0$/);
+  assert.ok(!win.document.querySelector('#reviewlines .rline'), 'line gone from review');
+
+  // redo: Sam's +10 on the point pad scores the REVIEWED question
+  [...rowOf('Sam').querySelectorAll('.pbtns button')].find(b => b.dataset.v === '10').click();
+  await sleep(10);
+  assert.match(rowOf('Sam').querySelector('.pscore').textContent, /10/);
+  const redone = win.document.querySelector('#reviewlines .rline');
+  assert.match(redone.textContent, /Sam · get/);
+
+  // history sidebar shows the fix under Tossup 1, no trace of Kim's line
+  assert.match($('histlist').innerHTML, /Sam · g/);
+  assert.ok(!/Kim/.test($('histlist').innerHTML), 'voided line gone from history');
 });
 
 test('refresh mid-adjudication: the pending buzz survives and verdicts', { skip }, async () => {

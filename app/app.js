@@ -898,9 +898,30 @@ function clearBuzz() {
   render();
 }
 
+// Stat-honest kind for host-forced points (mirrors the engine's
+// override/padKind mapping): +15 IS a power, the neg value a neg.
+function padKindFor(v) {
+  const pts = state.config.points;
+  return pts.superpower != null && v === pts.superpower ? 'superpower'
+    : v === pts.power ? 'power'
+    : v === pts.get ? 'get'
+    : v === pts.neg ? 'neg'
+    : v === 0 ? 'miss' : null;
+}
+
 // Player-row point buttons: during reading = buzz + verdict in one tap;
-// with a pending buzz = assign player + verdict; otherwise = adjustment.
+// with a pending buzz = assign player + verdict; in review = a real
+// score line ON THE REVIEWED QUESTION (redo of a mis-scored buzz);
+// otherwise = adjustment.
 function directPoints(p, v) {
+  if (review) {
+    const qid = packet.tossups[review.idx]._id;
+    pushUndo();
+    dispatch({ type: 'award', player: p, points: v, qid,
+               kind: padKindFor(v) ?? 'award', reason: 'adjust' });
+    refreshQlog(qid);
+    return;
+  }
   if (cur && !cur.pending && state.phase === 'reading') {
     pushUndo();   // one level for the whole buzz+verdict tap
     pauseReading();
@@ -1427,7 +1448,7 @@ function renderReviewLines(qid) {
     const pad = e.kind === 'dead' ? '' : opts.map(v =>
       `<button data-e="${idx}" data-v="${v}" class="${v === e.points ? 'sel ' : ''}${
         v > 0 ? 'good' : v < 0 ? 'bad' : ''}">${v > 0 ? '+' + v : v}</button>`).join('');
-    return `<div class="rline"><span class="rwho">${who}</span><span class="rpad">${pad}</span></div>`;
+    return `<div class="rline" data-e="${idx}" data-k="${esc(e.kind)}"><span class="rwho">${who}</span><span class="rpad">${pad}</span></div>`;
   }).join('');
   for (const b of el.querySelectorAll('button')) {
     b.onclick = () => {
@@ -1436,18 +1457,39 @@ function renderReviewLines(qid) {
       refreshQlog(qid);
     };
   }
+  // Right-click a line: retract it — as if that buzz never happened
+  // (scores, stats, lockout-free history all re-derive). Redo it via
+  // the roster point pad, which scores onto the reviewed question.
+  const TOSSUP_KINDS = ['superpower', 'power', 'get', 'neg', 'miss'];
+  for (const div of el.querySelectorAll('.rline')) {
+    div.oncontextmenu = ev => {
+      ev.preventDefault();
+      showMenu(ev.clientX, ev.clientY, [{
+        label: TOSSUP_KINDS.includes(div.dataset.k) ? 'undo buzz' : 'remove line',
+        run: () => {
+          pushUndo();
+          dispatch({ type: 'retract', entryIdx: +div.dataset.e });
+          refreshQlog(qid);
+        },
+      }]);
+    };
+  }
 }
 
-// Who the reviewed bonus belongs to: its own lines if it was heard,
-// else the tossup winner's team (lets a skipped bonus be scored late).
+// Who the reviewed bonus belongs to: the winner line is the live truth
+// (a retract + redo may have moved the tossup to another team — new
+// toggles then re-attribute part by part); bonus lines decide only
+// when no winner line remains (a late-scored skipped bonus).
 function reviewBonusSource(qid) {
   const entries = liveLog(state).filter(e => e.qid === qid);
+  const t = entries.find(e => e.kind === 'power' || e.kind === 'get' || e.kind === 'superpower');
+  if (t) {
+    const team = state.teams[t.player] || null;
+    return { team, player: team ? null : t.player };
+  }
   const b = entries.find(e => e.kind === 'bonus');
   if (b) return { team: b.team, player: b.player };
-  const t = entries.find(e => e.kind === 'power' || e.kind === 'get' || e.kind === 'superpower');
-  if (!t) return null;
-  const team = state.teams[t.player] || null;
-  return { team, player: team ? null : t.player };
+  return null;
 }
 
 function renderReviewBonus(i, qid) {
@@ -1572,11 +1614,24 @@ function renderScoring() {
     row.querySelector('.pname').onclick = () => {
       if (pendingBuzz && eligible().includes(p)) { selPlayer = p; render(); }
     };
-    // Right-click the buzzer's row: undo the buzz (clear, no trace).
+    // Right-click a player's row: while they hold the pending buzz,
+    // clear it (no score line, no lockout); after their buzz scored,
+    // undo it (stack replay — the verdict, the bonus, everything).
     row.oncontextmenu = e => {
-      if (!pendingBuzz || (selPlayer && selPlayer !== p)) return;
+      const items = [];
+      if (pendingBuzz && (!selPlayer || selPlayer === p)) {
+        items.push({ label: 'undo buzz', run: clearBuzz });
+      } else if (!pendingBuzz && !review) {
+        const live = liveLog(state);
+        const lastTossup = [...live].reverse().find(x => x.kind !== 'bonus');
+        if (lastTossup && lastTossup.player === p) {
+          items.push({ label: 'undo ' + lastTossup.kind,
+                       run: () => undoThrough(state.log.indexOf(lastTossup)) });
+        }
+      }
+      if (!items.length) return;
       e.preventDefault();
-      showMenu(e.clientX, e.clientY, [{ label: 'undo buzz', run: clearBuzz }]);
+      showMenu(e.clientX, e.clientY, items);
     };
     row.querySelector('.handle').onpointerdown = e => startDrag(e, p, row);
   }

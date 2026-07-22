@@ -60,7 +60,8 @@ entries (buzz order, lockouts, and history still work).
 | `reading_finished` | `{}` | closes the neg window (phase stays askable) |
 | `buzz` | `{player, unitIdx, ts}` | first non-locked-out player wins: phase → `buzzed`, reading pauses |
 | `verdict` | `{result: 'correct'\|'wrong', source: 'checker'\|'host', answer?, points?}` | scores per rule table — `points` overrides it (the host point pad in voice/manual-read mode, where position is unknown); correct → phase `done`; wrong → lockout, phase → `reading` (resume) or `dead` if everyone is locked out and reading finished |
-| `award` | `{player, points, reason}` | direct score line (host point pad, corrections) |
+| `award` | `{player, points, reason, qid?, kind?}` | direct score line (host point pad, corrections); `qid` targets a past question and a tossup `kind` (power/get/neg) makes it count in stat lines — review's "redo the buzz" |
+| `retract` | `{entryIdx}` | surgically voids one log entry — the raw log keeps it (event sourcing) but `liveLog` drops it, so scores/stats/history re-derive as if the buzz never happened; a current-question neg's lockouts rebuild from the remaining live entries |
 | `bonus_part` | `{qid, team?, player?, partIdx, points}` | one bonus part's outcome, attributed to the controlling player's **team** (or to the player only when teamless — Denis's rule: bonuses score to the team). Logged at 0 too, so bonuses-heard/ppb is derivable. Re-sending the same `(qid, partIdx)` **supersedes** the earlier line (`liveLog()` keeps the last) — give/ungive toggling is ordinary appends |
 | `dead` | `{}` | give up on the question: phase → `done`, no score |
 | `next` | `{}` | ready for the next `question_start` |
@@ -176,8 +177,14 @@ answer, its score lines with an edit pad (`override` — kind re-derives
 from the new points so stat lines stay honest), and its bonus with
 live checkboxes / 1-2-3 keys (`bonus_part` supersede re-scores it; a
 bonus the tossup winner's team never heard can be scored late,
-attributed via the winning line). Review edits refresh the matching
-qlog entry so room players' Past Questions stay truthful.
+attributed via the winning line). **Undo + redo a buzz**: right-click
+a score line to retract it (`retract` — as if the buzz never
+happened), then the roster point pad scores the replacement onto the
+REVIEWED question (`award` with qid + kind, so a +15 is a power in
+the stat lines); the bonus re-attributes to the new winner as its
+parts are re-toggled. Review edits refresh the matching qlog entry so
+room players' Past Questions stay truthful. Tested end-to-end in
+`tests/dom_session.test.mjs`.
 
 ## Reveal units (shared contract with the reader)
 

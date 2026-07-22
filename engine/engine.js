@@ -38,17 +38,18 @@ export function initialState(config = {}) {
   };
 }
 
-/** The log with superseded bonus lines removed: a later `bonus` entry
- * for the same (qid, partIdx) replaces the earlier one, which is what
- * makes give/ungive toggling ordinary appends. Everything derived —
- * scores, stats, history — reads this, never state.log directly. */
+/** The log with superseded bonus lines and retracted entries removed:
+ * a later `bonus` entry for the same (qid, partIdx) replaces the
+ * earlier one (give/ungive toggling as ordinary appends), and a
+ * `retract` voids any line. Everything derived — scores, stats,
+ * history — reads this, never state.log directly. */
 export function liveLog(state) {
   const last = new Map();
   state.log.forEach((e, i) => {
-    if (e.kind === 'bonus' && e.partIdx != null) last.set(e.qid + '\0' + e.partIdx, i);
+    if (!e.retracted && e.kind === 'bonus' && e.partIdx != null) last.set(e.qid + '\0' + e.partIdx, i);
   });
   return state.log.filter((e, i) =>
-    e.kind !== 'bonus' || e.partIdx == null || last.get(e.qid + '\0' + e.partIdx) === i);
+    !e.retracted && (e.kind !== 'bonus' || e.partIdx == null || last.get(e.qid + '\0' + e.partIdx) === i));
 }
 
 /** Total points per player, derived from the log. Bonus lines carry a
@@ -107,7 +108,7 @@ export function bonusStats(state) {
 export function tossupStats(state) {
   const acc = {};
   for (const p of state.players) acc[p] = { powers: 0, gets: 0, negs: 0 };
-  for (const e of state.log) {
+  for (const e of liveLog(state)) {
     if (e.player == null || !acc[e.player]) continue;
     if (e.kind === 'superpower' || e.kind === 'power') acc[e.player].powers++;
     else if (e.kind === 'get') acc[e.player].gets++;
@@ -210,6 +211,30 @@ export function reduce(state, event) {
     return { ...state, log: [] };
   }
 
+  if (type === 'retract') {
+    // Surgically void one past log entry (review's "undo buzz"): the
+    // line stays in the raw log (event sourcing) but liveLog drops it,
+    // so scores, stats, and history re-derive without it. Retracting a
+    // wrong buzz on the CURRENT question also releases its lockouts —
+    // they rebuild from the remaining live wrong entries.
+    const target = state.log[event.entryIdx];
+    if (!target || target.retracted) return state;
+    const log = state.log.map((e, i) =>
+      i === event.entryIdx ? { ...e, retracted: true } : e);
+    let current = state.current;
+    if (current && target.qid === current.qid
+        && (target.kind === 'neg' || target.kind === 'miss')) {
+      const locked = new Set();
+      for (const e of log) {
+        if (e.retracted || e.qid !== current.qid) continue;
+        if (e.kind !== 'neg' && e.kind !== 'miss') continue;
+        for (const p of teammates(state, e.player)) locked.add(p);
+      }
+      current = { ...current, lockouts: [...locked] };
+    }
+    return { ...state, log, current };
+  }
+
   if (type === 'question_start') {
     return {
       ...state,
@@ -295,12 +320,14 @@ export function reduce(state, event) {
 
   if (type === 'award') {
     // Direct score line: the host point pad (voice mode's primary
-    // scoring path), bonus parts, and one-off corrections.
+    // scoring path), one-off corrections, and review's "redo the buzz"
+    // — which targets a past question via `qid` and passes a tossup
+    // `kind` (power/get/neg) so stat lines count it like a real buzz.
     return {
       ...state,
       log: [...state.log, {
-        qid: state.current ? state.current.qid : null,
-        player: event.player, kind: event.reason ?? 'award',
+        qid: event.qid ?? (state.current ? state.current.qid : null),
+        player: event.player, kind: event.kind ?? event.reason ?? 'award',
         points: event.points, unitIdx: null, ts: event.ts ?? null,
         source: 'host', answer: null,
       }],

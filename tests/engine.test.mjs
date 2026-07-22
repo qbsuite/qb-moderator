@@ -418,3 +418,88 @@ test('clear_scores works between questions (no current)', () => {
   assert.equal(s.phase, 'idle');
   assert.equal(scores(s).A, 0);
 });
+
+test('retract voids a line: scores, stats, and history re-derive', () => {
+  let s = start();
+  s = play(s,
+    { type: 'player_move', player: 'A', team: 'Red' },
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },
+    { type: 'bonus_part', partIdx: 0, team: 'Red', points: 10 });
+  assert.equal(scores(s).A, 10);
+  s = reduce(s, { type: 'retract', entryIdx: 0 });
+  assert.equal(scores(s).A, 0);
+  assert.deepEqual(tossupStats(s).A, { powers: 0, gets: 0, negs: 0 });
+  assert.equal(liveLog(s).length, 1);            // only the bonus line remains
+  assert.equal(s.log.length, 2, 'raw log keeps the voided line (event sourcing)');
+  const again = reduce(s, { type: 'retract', entryIdx: 0 });
+  assert.equal(liveLog(again).length, 1, 'double retract is a no-op');
+});
+
+test('retracting a current-question neg releases the team lockout', () => {
+  let s = start();
+  s = play(s,
+    { type: 'player_move', player: 'A', team: 'Red' },
+    { type: 'player_move', player: 'B', team: 'Red' },
+    { type: 'buzz', player: 'A', unitIdx: 5 },
+    { type: 'verdict', result: 'wrong' });       // whole Red team locked
+  assert.deepEqual([...s.current.lockouts].sort(), ['A', 'B']);
+  s = reduce(s, { type: 'retract', entryIdx: 0 });
+  assert.deepEqual(s.current.lockouts, []);
+  assert.equal(scores(s).A, 0);
+  // B can buzz again
+  s = play(s,
+    { type: 'buzz', player: 'B', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' });
+  assert.equal(scores(s).B, 10);
+});
+
+test('retract on a PAST question leaves the current one untouched', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },              // q1: A +10
+    { type: 'question_start', qid: 'q2', powerIdx: 10, unitCount: 40 },
+    { type: 'buzz', player: 'B', unitIdx: 5 },
+    { type: 'verdict', result: 'wrong' });               // q2: B locked
+  s = reduce(s, { type: 'retract', entryIdx: 0 });       // undo q1's get
+  assert.equal(scores(s).A, 0);
+  assert.deepEqual(s.current.lockouts, ['B'], 'q2 lockout survives');
+  assert.equal(s.phase, 'reading');
+});
+
+test('award with qid + kind: the review "redo" scores a past question honestly', () => {
+  let s = start();
+  s = play(s,
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },              // q1: A +10 (mis-attributed)
+    { type: 'question_start', qid: 'q2', powerIdx: 10, unitCount: 40 },
+    { type: 'retract', entryIdx: 0 },                    // undo A's buzz on q1
+    { type: 'award', player: 'B', points: 15, qid: 'q1', kind: 'power' });
+  assert.equal(scores(s).A, 0);
+  assert.equal(scores(s).B, 15);
+  assert.equal(tossupStats(s).B.powers, 1, 'redo counts in stat lines');
+  const line = liveLog(s).find(e => e.player === 'B');
+  assert.equal(line.qid, 'q1', 'attributed to the reviewed question');
+  // plain adjustments still land on the current question with kind award
+  s = reduce(s, { type: 'award', player: 'A', points: 5, reason: 'adjust' });
+  const adj = liveLog(s).at(-1);
+  assert.equal(adj.qid, 'q2');
+  assert.equal(adj.kind, 'adjust');
+});
+
+test('a retracted bonus line un-hears the bonus and frees the supersede slot', () => {
+  let s = start();
+  s = play(s,
+    { type: 'player_move', player: 'A', team: 'Red' },
+    { type: 'buzz', player: 'A', unitIdx: 20 },
+    { type: 'verdict', result: 'correct' },
+    { type: 'bonus_part', partIdx: 0, team: 'Red', points: 10 });
+  assert.equal(bonusStats(s).teams.Red.heard, 1);
+  const bonusIdx = s.log.findIndex(e => e.kind === 'bonus');
+  s = reduce(s, { type: 'retract', entryIdx: bonusIdx });
+  assert.deepEqual(bonusStats(s), { teams: {}, players: {} });
+  // a re-logged part shows up again (retraction didn't wedge the slot)
+  s = reduce(s, { type: 'bonus_part', qid: 'q1', partIdx: 0, team: 'Red', points: 10 });
+  assert.equal(bonusStats(s).teams.Red.points, 10);
+});
