@@ -124,6 +124,13 @@ The roster UI exposes per-player point buttons (pointPad + 0): during
 reading they capture buzz + verdict in one tap; otherwise they're direct
 `award` adjustments.
 
+**Clear** (adjudication row, next to ✓/✗): drops a pending buzz with no
+engine events at all — no verdict, no score line, no lockout (buzzer
+checks, accidental taps). The buzzer's phone releases (`answer_result:
+done`), reading resumes, and the room re-arms; the buzz's undo mark is
+discarded (the voided-buzz pattern), so undo history reads as if the
+buzz never happened. Tested in `tests/answers.test.mjs`.
+
 **Undo** (app-level, event replay): every engine event funnels through
 one recorder; each host action (buzz, verdict, pad tap, bonus step or
 toggle, dead, next, start, review edit) pushes a mark + a snapshot of

@@ -155,6 +155,36 @@ test('answers from a non-buzzer are ignored', () => {
   assert.equal(ctx.sent.length, 0);
 });
 
+test('clear drops the buzz with no score, no lockout, and releases the phone', () => {
+  const ctx = harness();
+  ctx.handleRemoteBuzzPending('Kim');
+  ctx.handleRemoteBuzz('Kim');
+  ctx.clearBuzz();
+  assert.equal(ctx.pendingBuzz, null);
+  assert.equal(ctx.selPlayer, null);
+  assert.equal(ctx.state.phase, 'reading');
+  assert.equal(ctx.state.log.length, 0, 'no engine events, nothing logged');
+  assert.deepEqual(json(ctx.state.current.lockouts), []);
+  assert.deepEqual(json(ctx.sent.at(-1)), { t: 'answer_result', name: 'Kim', result: 'done' });
+  assert.equal(ctx.calls.resumed, 1);
+  // the same player can buzz again immediately — no lockout happened
+  ctx.handleRemoteBuzzPending('Kim');
+  ctx.handleRemoteBuzz('Kim');
+  ctx.handleRemoteAnswer('Kim', 'Paris');
+  assert.equal(ctx.state.phase, 'done');
+  assert.equal(scores(ctx.state).Kim, 15);
+});
+
+test('clear is a no-op while the buzz window is still resolving', () => {
+  const ctx = harness();
+  ctx.handleRemoteBuzzPending('Kim');
+  ctx.clearBuzz();
+  assert.ok(ctx.pendingBuzz, 'tentative buzz survives');
+  assert.equal(ctx.sent.length, 0);
+  ctx.handleRemoteBuzz('Kim');
+  assert.equal(ctx.selPlayer, 'Kim');
+});
+
 test('checker off: the answer fills the host field, no auto verdict', () => {
   const ctx = harness({ checker: false });
   ctx.handleRemoteBuzzPending('Kim');

@@ -812,6 +812,20 @@ function applyVerdict(result, points = null, noUndo = false) {
   render();
 }
 
+// Clear a pending buzz as if it never happened: no verdict, no score
+// line, no lockout — buzzer checks, accidental taps. The buzz's undo
+// mark goes with it (the voided-buzz pattern); the buzzer's phone
+// releases and the room re-arms on the next sync.
+function clearBuzz() {
+  if (!pendingBuzz || pendingBuzz.tentative) return;
+  undoStack.pop();
+  if (room && selPlayer) room.send({ t: 'answer_result', name: selPlayer, result: 'done' });
+  pendingBuzz = null; selPlayer = null; earlyAnswer = null;
+  $('givenanswer').value = '';
+  resumeReading();
+  render();
+}
+
 // Player-row point buttons: during reading = buzz + verdict in one tap;
 // with a pending buzz = assign player + verdict; otherwise = adjustment.
 function directPoints(p, v) {
@@ -913,6 +927,7 @@ $('prevbtn').onclick = () => reviewNav(-1);
 $('undobtn').onclick = undo;
 $('vcorrect').onclick = () => applyVerdict('correct');
 $('vwrong').onclick = () => applyVerdict('wrong');
+$('vclear').onclick = clearBuzz;
 $('givenanswer').oninput = renderSuggestion;
 
 // ---------- rendering ----------
@@ -976,7 +991,8 @@ function renderMain() {
   const armed = phase === 'reading' && !hostReads && !pending;
   $('buzz').classList.toggle('hidden', !(armed || pendingBuzz));
   $('buzz').classList.toggle('buzzed', !!pendingBuzz);
-  $('buzz').textContent = pendingBuzz ? 'buzzed' : 'BUZZ (space)';
+  $('buzz').textContent = pendingBuzz
+    ? (selPlayer ? selPlayer + ' buzzed' : 'buzzed') : 'BUZZ (space)';
   $('buzz').disabled = !!pendingBuzz;
 
   $('adjrow').classList.toggle('hidden', !pendingBuzz);
