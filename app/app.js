@@ -886,7 +886,32 @@ function suggested() {
 }
 
 // ---------- controls ----------
+// Context menu (right-click undo):
+function showMenu(x, y, items) {
+  hideMenu();
+  const m = document.createElement('div');
+  m.id = 'ctxmenu';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.textContent = it.label;
+    b.onclick = () => { hideMenu(); it.run(); };
+    m.appendChild(b);
+  }
+  m.style.left = x + 'px';
+  m.style.top = y + 'px';
+  document.body.appendChild(m);
+}
+function hideMenu() { document.getElementById('ctxmenu')?.remove(); }
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest('#ctxmenu')) hideMenu();
+});
+
 $('buzz').onclick = () => buzz();
+$('buzz').oncontextmenu = e => {
+  if (!pendingBuzz) return;
+  e.preventDefault();
+  showMenu(e.clientX, e.clientY, [{ label: 'undo buzz', run: clearBuzz }]);
+};
 document.addEventListener('keydown', e => {
   const tag = document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -1440,20 +1465,47 @@ function startDrag(e, p, row) {
 }
 
 // ---------- history sidebar: chronological, grouped by tossup ----------
+// Compact rows: kinds are letters (p/g/n), and a question's bonus folds
+// into one ✓/✗ run on the winning line — "+10 Kim · g | ✓✓✗". Negs and
+// other players keep their own lines. Right-click a line to undo back
+// through that action.
+const KIND_ABBR = { power: 'p', get: 'g', superpower: 's', neg: 'n', miss: 'x' };
+
 function renderHistory() {
+  const entries = liveLog(state);
+  const winner = k => k === 'power' || k === 'get' || k === 'superpower';
+  // Fold bonus parts per qid and pick the line that carries the marks:
+  // the winning buzz, else the question's last line (a review-edited
+  // winner, a late-scored dead tossup).
+  const bonuses = new Map();   // qid -> [partIdx -> given?]
+  const carrier = new Map();   // qid -> the log entry carrying the marks
+  for (const e of entries) {
+    if (e.kind === 'bonus') {
+      const parts = bonuses.get(e.qid) || [];
+      parts[e.partIdx ?? 0] = e.points > 0;
+      bonuses.set(e.qid, parts);
+    } else if (e.qid && (!carrier.has(e.qid) || !winner(carrier.get(e.qid).kind))) {
+      carrier.set(e.qid, e);
+    }
+  }
+  const marksFor = qid => Array.from(bonuses.get(qid), v =>
+    v ? '<span class="good">✓</span>' : '<span class="bad">✗</span>').join('');
   const rows = [];
   let lastQid = null;
-  for (const e of liveLog(state)) {
+  for (const e of entries) {
+    if (e.kind === 'bonus') continue;
     if (e.qid && e.qid !== lastQid) {
       lastQid = e.qid;
       rows.push(`<div class="tuhead">${esc(qidMeta[e.qid]?.label || 'Tossup')}</div>`);
     }
     const cls = e.points > 0 ? 'good' : e.points < 0 ? 'bad' : '';
-    const kind = e.kind === 'bonus' ? `bonus ${(e.partIdx ?? 0) + 1}` : e.kind;
-    const label = e.kind === 'dead' ? '<span class="faint">dead</span>'
-      : `${esc(e.team ?? e.player ?? '')} · ${kind}${e.answer ? ' · “' + esc(e.answer) + '”' : ''}`;
+    const marks = e.qid && carrier.get(e.qid) === e && bonuses.has(e.qid)
+      ? ` <span class="faint">|</span> ${marksFor(e.qid)}` : '';
+    const label = e.kind === 'dead' ? '<span class="faint">dead</span>' + marks
+      : `${esc(e.team ?? e.player ?? '')} · ${KIND_ABBR[e.kind] || e.kind}${
+          e.answer ? ' · “' + esc(e.answer) + '”' : ''}${marks}`;
     const pts = e.kind === 'dead' ? '' : (e.points > 0 ? '+' + e.points : String(e.points));
-    rows.push(`<li><span class="pts ${cls}">${pts}</span><span>${label}</span></li>`);
+    rows.push(`<li data-e="${state.log.indexOf(e)}"><span class="pts ${cls}">${pts}</span><span>${label}</span></li>`);
   }
   if (cur && state.phase !== 'done' && state.phase !== 'idle' && state.current) {
     if (state.current.qid !== lastQid) {
@@ -1463,7 +1515,22 @@ function renderHistory() {
   }
   const el = $('histlist');
   el.innerHTML = rows.join('');
+  for (const li of el.querySelectorAll('li[data-e]')) {
+    li.oncontextmenu = ev => {
+      ev.preventDefault();
+      showMenu(ev.clientX, ev.clientY, [
+        { label: 'undo from here', run: () => undoThrough(+li.dataset.e) },
+      ]);
+    };
+  }
   el.parentElement.scrollTop = el.parentElement.scrollHeight;
+}
+
+// Undo back through the action that produced log entry logIdx: replays
+// the undo stack until that line (and everything after it) is gone.
+// Roster and settings events survive each level, as with ctrl+z.
+function undoThrough(logIdx) {
+  while (undoStack.length && state.log.length > logIdx) undo();
 }
 
 // ---------- roster editor: bulk team/player entry ----------

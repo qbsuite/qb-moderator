@@ -154,7 +154,10 @@ events that landed after it — a mid-question room join survives
 undoing the verdict it interrupted. Reading states restore paused;
 audio reloads + seeks to the snapshot position when the question
 changed. Undoing a pending remote buzz releases the phone's answer bar
-(`answer_result: done`). Tested in `tests/undo.test.mjs`.
+(`answer_result: done`). Right-click reaches the same machinery: the
+red buzz button offers "undo buzz" (= Clear), and any history line
+offers "undo from here" — the stack replays until that line and
+everything after it is gone. Tested in `tests/undo.test.mjs`.
 
 **Review** (browse previous questions): ◂ steps back through the
 current packet's completed tossups (between questions only; ▸ returns
