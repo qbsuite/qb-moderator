@@ -157,7 +157,8 @@ test('review: undo a scored buzz (right-click) and redo it for another player', 
   assert.match(redone.textContent, /Sam · get/);
 
   // history sidebar shows the fix under Tossup 1, no trace of Kim's line
-  assert.match($('histlist').innerHTML, /Sam · g/);
+  assert.match($('histlist').innerHTML, /Sam/);
+  assert.ok(!/· g\b/.test($('histlist').innerHTML), 'tossup lines carry no kind letter');
   assert.ok(!/Kim/.test($('histlist').innerHTML), 'voided line gone from history');
 });
 

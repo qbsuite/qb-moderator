@@ -1675,11 +1675,12 @@ function startDrag(e, p, row) {
 }
 
 // ---------- history sidebar: chronological, grouped by tossup ----------
-// Compact rows: kinds are letters (p/g/n), and a question's bonus folds
-// into one ✓/✗ run on the winning line — "+10 Kim · g | ✓✓✗". Negs and
-// other players keep their own lines. Right-click a line to undo back
-// through that action.
-const KIND_ABBR = { power: 'p', get: 'g', superpower: 's', neg: 'n', miss: 'x' };
+// Compact rows: the points column already says power/get/neg, so
+// tossup lines are just the name, and a question's bonus folds into
+// one ✓/✗ run on the winning line — "+10 Kim | ✓✓✗". Negs and other
+// players keep their own lines; non-tossup kinds (adjust) stay
+// labeled. Right-click a line to undo back through that action.
+const HIST_TOSSUP_KINDS = new Set(['superpower', 'power', 'get', 'neg', 'miss']);
 
 function renderHistory() {
   const entries = liveLog(state);
@@ -1712,7 +1713,7 @@ function renderHistory() {
     const marks = e.qid && carrier.get(e.qid) === e && bonuses.has(e.qid)
       ? ` <span class="faint">|</span> ${marksFor(e.qid)}` : '';
     const label = e.kind === 'dead' ? '<span class="faint">dead</span>' + marks
-      : `${esc(e.team ?? e.player ?? '')} · ${KIND_ABBR[e.kind] || e.kind}${
+      : `${esc(e.team ?? e.player ?? '')}${HIST_TOSSUP_KINDS.has(e.kind) ? '' : ' · ' + esc(e.kind)}${
           e.answer ? ' · “' + esc(e.answer) + '”' : ''}${marks}`;
     const pts = e.kind === 'dead' ? '' : (e.points > 0 ? '+' + e.points : String(e.points));
     rows.push(`<li data-e="${state.log.indexOf(e)}"><span class="pts ${cls}">${pts}</span><span>${label}</span></li>`);
